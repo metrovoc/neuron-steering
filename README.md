@@ -46,7 +46,7 @@ A request with `"experimental_speed_projection": false` runs the stock model; in
 identical to a server without a vector.
 
 Results on the Q2_0 pack (M5 Pro, 64 GB), greedy, from a weight-only lens search of the routed experts in layers
-12–14 and 20, and the shared experts in every layer:
+12–16 and 20, and the shared experts in every layer:
 
 | Push | Effect |
 | --- | --- |
