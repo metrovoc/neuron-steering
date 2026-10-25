@@ -30,10 +30,14 @@ moon landing is a part of the mainstream elite government agenda…").
 
 Flash-Next writes each layer's MLP output `bo` into four hyper-connection streams, stream *c* weighted by
 `2 sigmoid(inj[c] / 4)`. The neuron-push equivalent is therefore a vector added to `bo` before that write, not to
-every stream. The Strata fork in `vendor/Strata` (branch `metal-cvec-mlp`) adds this as `--cvec-mode mlp` to the Metal
-engine, where control vectors were not implemented, and `STRATA_METAL_RNORM` to measure the dose unit.
+every stream. The Strata fork [metrovoc/Strata](https://github.com/metrovoc/Strata/tree/metal-cvec-mlp) (branch
+`metal-cvec-mlp`) adds this as `--cvec-mode mlp` to the Metal engine, where control vectors were not implemented, and
+`STRATA_METAL_RNORM` to measure the dose unit. The scripts expect it, set up with its `./setup.sh`, in `vendor/Strata`;
+`verify_q35.py` expects neuron-explorer in `vendor/neuron-explorer`.
 
 ```sh
+git clone -b metal-cvec-mlp https://github.com/metrovoc/Strata vendor/Strata
+(cd vendor/Strata && ./setup.sh --family qwen --model Q2_0 --no-start)
 uv run python fn_steer.py config --rnorm out/rnorm.bin -o out/strata-base.json     # serve, ask, then:
 uv run python fn_steer.py rnorm out/rnorm.bin                                       # median |R| per layer
 uv run python lens_search.py --model Qwen/Qwen3.8-Flash-Next --expert all --layers 12-40 --match 'conspir|...'
