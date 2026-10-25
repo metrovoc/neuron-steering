@@ -31,22 +31,25 @@ REFERENCE_TEXT = (
 # ---------- weights: local snapshot or HTTP range reads, only the bytes a column needs ----------
 class Weights:
     def __init__(self, model):
-        self.local = os.path.isdir(model)
-        if not self.local:
-            from huggingface_hub import try_to_load_from_cache
-            cached = try_to_load_from_cache(model, "config.json")
-            if isinstance(cached, str):
-                model, self.local = os.path.dirname(cached), True
-        self.root = model if self.local else f"https://huggingface.co/{model}/resolve/main/"
+        self.model = model
         try:
             self.index = json.loads(self._read("model.safetensors.index.json"))["weight_map"]
         except Exception:
             self.index = None  # a single model.safetensors
         self.headers = {}
 
+    def _local(self, name):
+        """The file on disk (a local folder, or the HF cache), or None."""
+        if os.path.isdir(self.model):
+            return os.path.join(self.model, name)
+        from huggingface_hub import try_to_load_from_cache
+        p = try_to_load_from_cache(self.model, name)
+        return p if isinstance(p, str) else None
+
     def _read(self, name, rng=None):
-        if self.local:
-            with open(os.path.join(self.root, name), "rb") as f:
+        path = self._local(name)
+        if path is not None:
+            with open(path, "rb") as f:
                 if rng is None:
                     return f.read()
                 f.seek(rng[0])
@@ -54,7 +57,8 @@ class Weights:
         h = {"User-Agent": "ncvec"}
         if rng:
             h["Range"] = f"bytes={rng[0]}-{rng[1] - 1}"
-        return urllib.request.urlopen(urllib.request.Request(self.root + name, headers=h), timeout=300).read()
+        url = f"https://huggingface.co/{self.model}/resolve/main/{name}"
+        return urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=300).read()
 
     def names(self):
         if self.index is not None:
@@ -101,8 +105,8 @@ def down_name(w, layer, expert=None):
 
 def down_column(w, layer, n, expert=None):
     name = down_name(w, layer, expert)
-    if name.endswith("experts.down_proj"):  # experts stacked as [experts, inter, hidden]
-        return w.tensor(name, rows=(int(expert), int(expert) + 1))[0][n].copy()
+    if name.endswith("experts.down_proj"):  # experts stacked as [experts, hidden, inter]
+        return w.tensor(name, rows=(int(expert), int(expert) + 1))[0][:, n].copy()
     return w.tensor(name)[:, n].copy()  # nn.Linear layout [hidden, inter]
 
 
