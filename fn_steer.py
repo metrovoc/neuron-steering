@@ -45,7 +45,7 @@ def chat(prompt, steer, port, max_tokens):
 
 def ask(a):
     rows = []
-    for p in PROMPTS:
+    for p in a.prompt or PROMPTS:
         r = {"prompt": p, "base": chat(p, False, a.port, a.max_tokens)}
         if not a.base_only:
             r["steered"] = chat(p, True, a.port, a.max_tokens)
@@ -86,6 +86,7 @@ def main():
     q.add_argument("--port", type=int, default=8080)
     q.add_argument("--max-tokens", type=int, default=150)
     q.add_argument("--base-only", action="store_true")
+    q.add_argument("--prompt", action="append", help="instead of the built-in prompts (repeatable)")
     r = sub.add_parser("rnorm")
     r.add_argument("file")
     a = ap.parse_args()
