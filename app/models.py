@@ -84,10 +84,19 @@ CARD = {False: {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty
         True: {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.5}}
 
 
+KNOBS = {"temperature": float, "top_p": float, "top_k": int, "min_p": float, "presence_penalty": float}
+
+
 def sampling(opts):
-    """opts -> (thinking, sampling dict): the model card's sampling, or greedy, plus an optional seed."""
+    """opts -> (thinking, sampling dict): the model card's sampling, greedy, or opts["custom"], plus an optional seed."""
     think = bool(opts.get("thinking"))
-    s = {"temperature": 0.0} if opts.get("sampling") == "greedy" else dict(CARD[think])
+    mode = opts.get("sampling")
+    if mode == "greedy":
+        s = {"temperature": 0.0}
+    elif mode == "custom":
+        s = {k: f(v) for k, f in KNOBS.items() if (v := (opts.get("custom") or {}).get(k)) not in (None, "")}
+    else:
+        s = dict(CARD[think])
     if str(opts.get("seed", "")).strip().isdigit():
         s["seed"] = int(opts["seed"])
     return think, s
@@ -231,12 +240,13 @@ class Small:
 
     @staticmethod
     def sample(logits, seen, s, gen):
-        """One token per row: greedy at temperature 0, else presence penalty, temperature, top-k and top-p."""
-        if not s.get("temperature"):
+        """One token per row: greedy at temperature 0, else presence penalty, temperature, top-k, top-p and min-p."""
+        if not s.get("temperature", 1.0):
             return logits.argmax(-1)
-        v, i = ((logits.cpu() - s.get("presence_penalty", 0) * seen) / s["temperature"]).topk(s.get("top_k", 20), -1)
+        l = (logits.cpu() - s.get("presence_penalty", 0) * seen) / s.get("temperature", 1.0)
+        v, i = l.topk(min(s.get("top_k") or l.shape[-1], l.shape[-1]), -1)
         p = torch.softmax(v, -1)
-        p = p * ((p.cumsum(-1) - p) < s.get("top_p", 1.0))
+        p = p * ((p.cumsum(-1) - p) < s.get("top_p", 1.0)) * (p >= s.get("min_p", 0) * p[:, :1])
         pick = torch.multinomial(p / p.sum(-1, keepdim=True), 1, generator=gen)
         return i.gather(-1, pick)[:, 0].to(logits.device)
 

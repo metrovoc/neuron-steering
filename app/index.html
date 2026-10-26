@@ -60,9 +60,13 @@
   .pop .sep { height: 1px; background: var(--line); margin: 5px 4px; }
   .pop .head { color: var(--faint); font-size: 11.5px; padding: 6px 10px 3px; text-transform: uppercase; letter-spacing: .04em; }
   .pop .nameitem { padding: 4px 6px; } .pop .nameitem input { width: 100%; }
-  .settings { width: 380px; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+  .settings { width: 420px; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
   .field { display: flex; flex-direction: column; gap: 6px; }
   .field > span { font-size: 12.5px; color: var(--dim); display: flex; justify-content: space-between; }
+  .knobs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 2px; }
+  .knobs label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--faint); }
+  .knobs input { width: 100%; padding: 5px 6px; font: 12.5px var(--mono); }
+  .knobs.muted input { color: var(--dim); }
   .field > span b { font: 12.5px var(--mono); color: var(--text); font-weight: 500; }
   .text { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; outline: 0; resize: vertical; font-size: 13px; }
   .text:focus { border-color: var(--faint); }
@@ -357,9 +361,12 @@ const state = {
   model: "flash", tab: "chat", fmode: "words", steer: true,
   stacks: { small: [], flash: [] }, saved: { small: {}, flash: {} }, factors: { small: [-1, 0, 1], flash: [0, 1] },
   q: "", ftext: "", fa: "", fb: "", lanes: "compare",
-  opts: { sampling: "card", seed: "", max_tokens: 4096, chat_thinking: false, agent_thinking: true, system: "", agent_system: "", steps: 40 },
+  opts: { sampling: "card", custom: { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5 }, seed: "", max_tokens: 4096, chat_thinking: false, agent_thinking: true, system: "", agent_system: "", steps: 40 },
 };
-try { const s = JSON.parse(localStorage.getItem("ns3")); if (s) for (const k in state) if (k in s && (k !== "opts" || s.opts.sampling)) state[k] = s[k]; } catch {}
+const CARD = { false: { temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5 },
+               true: { temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 1.5 } };
+const KNOBS = [["temperature", "Temperature", 0.05], ["top_p", "Top-p", 0.05], ["top_k", "Top-k", 1], ["min_p", "Min-p", 0.01], ["presence_penalty", "Presence", 0.1]];
+try { const s = JSON.parse(localStorage.getItem("ns3")); if (s) for (const k in state) if (k in s && (k !== "opts" || s.opts.sampling)) state[k] = s[k]; state.opts.custom ||= { ...CARD[false] }; } catch {}
 const save = () => { try { localStorage.setItem("ns3", JSON.stringify(state)); } catch {} };
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html !== undefined) e.innerHTML = html; return e; };
@@ -554,7 +561,8 @@ $("libbtn").onclick = () => openPop($("libbtn"), (p) => {
 $("setbtn").onclick = () => openPop($("setbtn"), (p) => {
   p.classList.add("settings"); const o = state.opts;
   p.innerHTML = `
-    <div class="field"><span>Sampling</span><div class="seg" id="ssamp"><button data-v="card">Model card</button><button data-v="greedy">Greedy</button></div></div>
+    <div class="field"><span>Sampling</span><div class="seg" id="ssamp"><button data-v="card">Model card</button><button data-v="greedy">Greedy</button><button data-v="custom">Custom</button></div>
+      <div class="knobs" id="sknobs">${KNOBS.map(([k, label, step]) => `<label><span>${label}</span><input class="text" type="number" min="0" step="${step}" data-k="${k}"></label>`).join("")}</div></div>
     <label class="field"><span>Seed</span><input class="text" id="sseed" placeholder="Random" value="${esc(o.seed)}" inputmode="numeric"></label>
     <div class="field"><span>Thinking</span><div class="seg" id="sthink"><button data-v="chat_thinking">Chat</button><button data-v="agent_thinking">Agent</button></div></div>
     <label class="field"><span>Max tokens per reply <b id="mv">${o.max_tokens}</b></span><input type="range" id="sm" min="256" max="16384" step="256" value="${o.max_tokens}"></label>
@@ -565,7 +573,19 @@ $("setbtn").onclick = () => openPop($("setbtn"), (p) => {
   bind("sm", "max_tokens", "mv", parseInt); bind("sp", "steps", "pv", parseInt); bind("sseed", "seed");
   bind("ss", "system"); bind("sa", "agent_system");
   const samp = p.querySelector("#ssamp"), think = p.querySelector("#sthink");
-  const paint = () => { for (const b of samp.children) b.classList.toggle("on", b.dataset.v === o.sampling); for (const b of think.children) b.classList.toggle("on", !!o[b.dataset.v]); };
+  const knobs = [...p.querySelectorAll("#sknobs input")];
+  const paint = () => {
+    for (const b of samp.children) b.classList.toggle("on", b.dataset.v === o.sampling);
+    for (const b of think.children) b.classList.toggle("on", !!o[b.dataset.v]);
+    // the fields show what a chat reply would use; editing one switches to Custom, starting from those values
+    const shown = o.sampling === "custom" ? o.custom : o.sampling === "greedy" ? { ...o.custom, temperature: 0 } : CARD[!!o.chat_thinking];
+    for (const x of knobs) if (document.activeElement !== x) x.value = shown[x.dataset.k] ?? "";
+    p.querySelector("#sknobs").classList.toggle("muted", o.sampling !== "custom");
+  };
+  for (const x of knobs) x.oninput = () => {
+    if (o.sampling !== "custom") { o.custom = Object.fromEntries(knobs.map((y) => [y.dataset.k, parseFloat(y.value) || 0])); o.sampling = "custom"; }
+    o.custom[x.dataset.k] = x.value === "" ? "" : parseFloat(x.value); save(); paint();
+  };
   for (const b of samp.children) b.onclick = () => { o.sampling = b.dataset.v; save(); paint(); };
   for (const b of think.children) b.onclick = () => { o[b.dataset.v] = !o[b.dataset.v]; save(); paint(); };
   paint();

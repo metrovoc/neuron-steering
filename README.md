@@ -88,7 +88,8 @@ llama.cpp control vector.
 - The book button opens lessons that drive the app step by step.
 
 Replies use the sampling each model card recommends for its thinking state (0.7, top-p 0.8, top-k 20, presence
-penalty 1.5 without thinking; 1.0 and top-p 0.95 with it), or greedy decoding; a seed makes runs repeatable. Thinking
+penalty 1.5 without thinking; 1.0 and top-p 0.95 with it), greedy decoding, or your own temperature, top-p, top-k, min-p and presence penalty (top-k 0 is off; Strata caps it at
+64); a seed makes runs repeatable. Thinking
 is off in Chat and on in Agent by default, and the reasoning is shown folded. These and the system prompts are under
 the settings button.
 
