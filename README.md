@@ -61,3 +61,13 @@ Results on the Q2_0 pack (M5 Pro, 64 GB), greedy, from a weight-only lens search
 
 Lexical neurons late in the model mostly make it say their word; the useful one sits early (layer 14) and carries an
 attitude. The doses Flash-Next needs (×8–12) are much larger than Qwen3.5-4B's (±1).
+
+## GUI
+
+```sh
+uv run python app/server.py      # http://127.0.0.1:8787
+```
+
+Stack neuron pushes, see each column's logit-lens tokens, and compare greedy replies side by side: pushed the other way,
+unsteered and pushed (Qwen3.5-4B, live through neuron-explorer), or unsteered and pushed (Flash-Next, in Strata, which
+restarts with a new vector when the stack changes).

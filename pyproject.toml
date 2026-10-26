@@ -10,4 +10,6 @@ dependencies = [
     "transformers",
     "safetensors",
     "huggingface_hub",
+    "fastapi>=0.162.0",
+    "uvicorn>=0.54.0",
 ]
