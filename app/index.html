@@ -373,11 +373,12 @@ const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls)
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const M = () => MODELS[state.model];
 const stack = () => state.stacks[state.model];
-const pushes = () => state.steer ? stack().filter((p) => p.on !== false && p.dose).map((p) => ({ layer: p.layer, neuron: p.neuron, dose: p.dose, expert: p.expert || null })) : [];
+const expertKey = (expert) => expert == null ? "" : String(expert);
+const pushes = () => state.steer ? stack().filter((p) => p.on !== false && p.dose).map((p) => ({ layer: p.layer, neuron: p.neuron, dose: p.dose, expert: expertKey(p.expert) || null })) : [];
 const fmt = (d) => (d > 0 ? "+" : d < 0 ? "−" : "") + +Math.abs(d).toFixed(2);
 const fglyph = (f) => (f === 0 ? "0" : f === 1 ? "+" : f === -1 ? "−" : (f < 0 ? "−" : "×") + +Math.abs(f).toFixed(2));
 const fcls = (f) => (f > 0 ? "p" : f < 0 ? "n" : "");
-const nidHTML = (p) => `L${p.layer}${p.expert ? ` <i>E</i>${p.expert}` : ""} <i>N</i>${p.neuron}`;
+const nidHTML = (p) => `L${p.layer}${expertKey(p.expert) ? ` <i>E</i>${esc(p.expert)}` : ""} <i>N</i>${p.neuron}`;
 const ICON = {
   send: '<svg class="i" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg>',
   stop: '<svg class="i" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none"/></svg>',
@@ -413,11 +414,16 @@ function md(text) {
 }
 async function sse(url, body, on) {
   const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`Request failed (${res.status}): ${await res.text()}`);
   const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
-  for (;;) {
-    const { value, done } = await reader.read(); if (done) break;
-    buf += dec.decode(value, { stream: true }); let i;
-    while ((i = buf.indexOf("\n\n")) >= 0) { const ev = JSON.parse(buf.slice(6, i)); buf = buf.slice(i + 2); if (ev.error) toast(ev.error); on(ev); }
+  try {
+    for (;;) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true }); let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) { const ev = JSON.parse(buf.slice(6, i)); buf = buf.slice(i + 2); if (ev.error) toast(ev.error); on(ev); }
+    }
+  } finally {
+    await reader.cancel().catch(() => {}); reader.releaseLock();
   }
 }
 const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
@@ -427,13 +433,15 @@ function bindComposer(t, submit) {
   t.addEventListener("input", () => autosize(t));
   t.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); } });
 }
-let job = null;   // "chat" | "agent" | "find" while the server works for us
-function setJob(j) { job = j; paintSend(); }
+let job = null;   // "chat" | "agent" | "find" | "loading" | "session" while the server works for us
+function setJob(j) { job = j; paintSend(); if (!job) pump(); }
 function paintSend() {
   for (const [id, mine] of [["csend", "chat"], ["asend", "agent"]]) {
     const b = $(id), on = job === mine; b.classList.toggle("stop", on); b.innerHTML = on ? ICON.stop : ICON.send; b.title = on ? "Stop (Esc)" : "Send (Enter)";
     b.disabled = !!job && !on;
   }
+  $("modelbtn").disabled = !!job;
+  document.querySelectorAll("#cols .colhead button, #cols .addcol button").forEach((b) => b.disabled = !!job);
 }
 function stopJob() { if (job) fetch("/api/stop", { method: "POST" }); }
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closePop(); if (job) stopJob(); } });
@@ -465,23 +473,34 @@ $("modelbtn").onclick = () => openPop($("modelbtn"), (p) => {
     p.append(item(`<span class="led ${s}"></span>${m.label}`, () => { closePop(); setModel(k); }, `<small>${{ ready: "loaded", starting: "starting", off: "" }[s]}</small>`));
   }
 });
-function setModel(m) {
-  if (m !== state.model) { state.model = m; resetChat(); dropSession(); clearFind(); }
-  post("/api/warm", { model: m }); save(); paintModel(); renderStack(); renderCols(); renderLanes(); renderInspector();
+async function setModel(m) {
+  if (job) return toast("Wait for the current request to finish.");
+  if (m !== state.model) {
+    if (!(await dropSession())) return false;
+    state.model = m; insp = null; resetChat(); clearFind();
+  }
+  setJob("loading"); save(); paintModel(); renderStack(); renderCols(); renderLanes(); renderInspector(); paintSend();
+  try {
+    const r = await post("/api/warm", { model: m });
+    if (r.error) throw new Error(r.error);
+    return true;
+  } catch (e) { toast(String(e)); return false; }
+  finally { setJob(null); poll(); }
 }
 
 // ============================================================ lens
 const lensCache = {}, lensQueue = []; let lensBusy = 0;
 function lens(p, k = 12) {
-  const key = [state.model, p.layer, p.neuron, p.expert || "", k].join(":");
-  if (!lensCache[key]) lensCache[key] = new Promise((resolve) => { lensQueue.push([state.model, p, k, resolve]); pump(); });
+  const key = [state.model, p.layer, p.neuron, expertKey(p.expert), k].join(":");
+  if (!lensCache[key]) lensCache[key] = new Promise((resolve) => { lensQueue.push([state.model, { ...p }, k, key, resolve]); pump(); });
   return lensCache[key];
 }
 function pump() {
+  if (job) return;
   while (lensBusy < 3 && lensQueue.length) {
-    const [model, p, k, resolve] = lensQueue.shift(); lensBusy++;
-    const q = new URLSearchParams({ model, layer: p.layer, neuron: p.neuron, k, ...(p.expert ? { expert: p.expert } : {}) });
-    get("/api/lens?" + q).catch(() => ({})).then((r) => { lensBusy--; resolve(r.error ? {} : r); pump(); });
+    const [model, p, k, key, resolve] = lensQueue.shift(); lensBusy++;
+    const q = new URLSearchParams({ model, layer: p.layer, neuron: p.neuron, k, ...(expertKey(p.expert) ? { expert: expertKey(p.expert) } : {}) });
+    get("/api/lens?" + q).catch((e) => ({ error: String(e) })).then((r) => { lensBusy--; if (r.error) delete lensCache[key]; resolve(r.error ? {} : r); pump(); });
   }
 }
 const chipsHTML = (toks, cls, n = 8) => (toks || []).slice(0, n).map((t) => `<span class="chip ${cls}">${esc(t.trim() || "␣")}</span>`).join("");
@@ -498,7 +517,7 @@ function renderStack() {
       <div class="ids">
         <button class="dot ${p.on === false ? "" : "on"} ${p.dose < 0 ? "neg" : ""}" title="On or off"></button>
         <label><span>L</span><input data-k="layer" value="${p.layer}" inputmode="numeric"></label>
-        ${m.expert ? `<label title="Routed expert; empty for the shared expert"><span>E</span><input data-k="expert" value="${esc(p.expert || "")}" placeholder="sh"></label>` : ""}
+        ${m.expert ? `<label title="Routed expert; empty for the shared expert"><span>E</span><input data-k="expert" value="${esc(expertKey(p.expert))}" placeholder="sh"></label>` : ""}
         <label><span>N</span><input class="wide" data-k="neuron" value="${p.neuron}" inputmode="numeric"></label>
         <span class="more"><button class="mini insp" title="Inspect">${ICON.eye}</button><button class="mini del" title="Remove">${ICON.x}</button></span>
       </div>
@@ -520,16 +539,16 @@ function renderStack() {
     num.onfocus = () => num.select();
     dot.onclick = () => { p.on = p.on === false; card.classList.toggle("off", p.on === false); dot.classList.toggle("on", p.on !== false); save(); };
     card.querySelector(".del").onclick = () => { stack().splice(i, 1); renderStack(); save(); };
-    card.querySelector(".insp").onclick = () => { setTab("find"); inspect({ layer: p.layer, neuron: p.neuron, expert: p.expert || null }); };
+    card.querySelector(".insp").onclick = () => { setTab("find"); inspect({ layer: p.layer, neuron: p.neuron, expert: expertKey(p.expert) || null }); };
     box.append(card); fill();
   });
 }
 function addPush(p) {
   const s = stack();
-  const same = s.find((q) => q.layer === p.layer && q.neuron === p.neuron && (q.expert || "") === (p.expert || ""));
-  if (same) { same.dose = p.dose; same.on = true; } else s.push({ on: true, ...p, expert: p.expert || "" });
+  const same = s.find((q) => q.layer === p.layer && q.neuron === p.neuron && (expertKey(q.expert)) === (expertKey(p.expert)));
+  if (same) { same.dose = p.dose; same.on = true; } else s.push({ on: true, ...p, expert: expertKey(p.expert) });
   state.steer = true; renderStack(); save();
-  toast(`Pushing L${p.layer}${p.expert ? " E" + p.expert : ""} N${p.neuron} ${fmt(p.dose)}`, "info");
+  toast(`Pushing L${p.layer}${expertKey(p.expert) ? " E" + p.expert : ""} N${p.neuron} ${fmt(p.dose)}`, "info");
 }
 $("add").onclick = () => { const s = stack(), last = s[s.length - 1]; s.push({ layer: last ? last.layer : Math.round(M().layers / 3), neuron: 0, dose: 0, expert: "", on: true }); renderStack(); save(); $("stack").lastElementChild?.querySelector("input[data-k=neuron]")?.select(); };
 $("libbtn").onclick = () => openPop($("libbtn"), (p) => {
@@ -551,8 +570,14 @@ $("libbtn").onclick = () => openPop($("libbtn"), (p) => {
   p.append(nameRow);
   p.append(item("Download as control vector (.gguf)", async () => {
     closePop();
-    const r = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: state.model, pushes: pushes() }) });
-    const a = el("a"); a.href = URL.createObjectURL(await r.blob()); a.download = `${state.model === "flash" ? "flash-next" : "qwen35-4b"}-steer.gguf`; a.click();
+    const model = state.model;
+    try {
+      const r = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model, pushes: pushes() }) });
+      if (!r.ok) throw new Error(`Export failed (${r.status}): ${await r.text()}`);
+      if (r.headers.get("content-type")?.includes("application/json")) { const error = await r.json(); throw new Error(error.error || error.detail || "Export failed"); }
+      const a = el("a"); a.href = URL.createObjectURL(await r.blob()); a.download = `${model === "flash" ? "flash-next" : "qwen35-4b"}-steer.gguf`; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 0);
+    } catch (e) { toast(String(e)); }
   }));
   p.append(item("Clear", () => { state.stacks[state.model] = []; renderStack(); save(); closePop(); }));
 });
@@ -603,7 +628,7 @@ for (const b of $("tabs").children) b.onclick = () => setTab(b.dataset.t);
 // ============================================================ Chat
 let convs = [];
 const factors = () => state.factors[state.model];
-function resetChat() { convs = factors().map(() => []); renderCols(); }
+function resetChat() { if (job) return; convs = factors().map(() => []); renderCols(); }
 function renderCols() {
   const box = $("cols"); box.innerHTML = ""; const fs = factors();
   while (convs.length < fs.length) convs.push([]); convs.length = fs.length;
@@ -612,16 +637,16 @@ function renderCols() {
     col.innerHTML = `<div class="colhead"><button class="glyph ${fcls(f)}" title="Dose factor for this column; click to change">${fglyph(f)}</button>${fs.length > 1 ? `<button class="mini" title="Remove column">${ICON.x}</button>` : ""}</div><div class="scroll"></div>`;
     const g = col.querySelector(".glyph");
     g.onclick = () => {
-      if (g.querySelector("input")) return;
+      if (job || g.querySelector("input")) return;
       g.innerHTML = `<input value="${f}">`; const inp = g.querySelector("input"); inp.focus(); inp.select();
-      const done = () => { const v = parseFloat(inp.value.replace("−", "-")); if (!isNaN(v)) fs[i] = v; save(); renderCols(); };
+      const done = () => { if (job) return; const v = parseFloat(inp.value.replace("−", "-")); if (!isNaN(v)) fs[i] = v; save(); renderCols(); };
       inp.onkeydown = (e) => { if (e.key === "Enter") done(); if (e.key === "Escape") renderCols(); }; inp.onblur = done;
     };
-    col.querySelector(".mini")?.addEventListener("click", () => { fs.splice(i, 1); convs.splice(i, 1); save(); renderCols(); });
+    col.querySelector(".mini")?.addEventListener("click", () => { if (job) return; fs.splice(i, 1); convs.splice(i, 1); save(); renderCols(); });
     box.append(col); paintCol(i);
   });
   const add = el("div", "addcol", `<button title="Add a column">${ICON.plus}</button>`);
-  add.querySelector("button").onclick = () => { fs.push(+((fs[fs.length - 1] ?? 0) + 0.5).toFixed(2)); convs.push(convs[0] ? convs[0].map((m) => ({ ...m })) : []); save(); renderCols(); };
+  add.querySelector("button").onclick = () => { if (job) return; fs.push(+((fs[fs.length - 1] ?? 0) + 0.5).toFixed(2)); convs.push(convs[0] ? convs[0].map((m) => ({ ...m })) : []); save(); renderCols(); };
   box.append(add);
   $("csuggest").innerHTML = ""; $("csuggest").hidden = convs.some((c) => c.length);
   for (const s of CHAT_SUGGEST) { const b = el("button", "", esc(s)); b.onclick = () => { $("cinput").value = s; autosize($("cinput")); $("cinput").focus(); }; $("csuggest").append(b); }
@@ -659,32 +684,38 @@ $("cform").onsubmit = (e) => { e.preventDefault(); sendChat(); };
 $("cnew").onclick = () => { if (!job) resetChat(); };
 
 // ============================================================ Find
-let found = null, selRow = null, tokSel = -1, insp = null;
+let found = null, selRow = null, tokSel = -1, insp = null, findVersion = 0, inspectorVersion = 0;
 function setFMode(f) {
   state.fmode = f; for (const b of $("fmode").children) b.classList.toggle("on", b.dataset.f === f);
   for (const k of ["words", "text", "contrast"]) $("f" + k).hidden = k !== f;
   clearFind(); save();
 }
 for (const b of $("fmode").children) b.onclick = () => setFMode(b.dataset.f);
-function clearFind() { found = null; tokSel = -1; renderResults(); }
+function clearFind() { findVersion++; found = null; tokSel = -1; renderResults(); renderInspector(); }
 function findBusy(msg) { $("results").innerHTML = `<div class="loading"><span class="spin"></span>${esc(msg)}</div>`; }
 const ID_RE = /^\s*L\s*(\d+)\s*(?:E\s*(\d+|sh(?:ared)?)\s*)?N\s*(\d+)\s*$/i;
 let qTimer;
 $("q").oninput = () => { state.q = $("q").value; save(); clearTimeout(qTimer); qTimer = setTimeout(words, 250); };
 $("fwords").onsubmit = (e) => { e.preventDefault(); words(); };
 async function words() {
+  clearTimeout(qTimer);
+  if (state.fmode !== "words") return;
+  const version = ++findVersion, model = state.model;
   const q = state.q.trim(), id = q.match(ID_RE);
   if (id) { found = null; renderResults(); return inspect({ layer: +id[1], expert: id[2] && !/^sh/i.test(id[2]) ? id[2] : null, neuron: +id[3] }); }
   if (q.length < 2) return clearFind();
-  const r = await get(`/api/search?model=${state.model}&q=${encodeURIComponent(q)}`);
-  if (state.q.trim() !== q) return;
+  const r = await get(`/api/search?model=${model}&q=${encodeURIComponent(q)}`).catch((e) => ({ error: String(e) }));
+  if (version !== findVersion || state.model !== model || state.fmode !== "words" || state.q.trim() !== q) return;
+  if (r.error) { toast(r.error); return; }
   found = { kind: "words", rows: r.results || [] }; renderResults();
 }
 async function runFind(kind, url, body, msg) {
   if (job) return toast("Wait for the current request to finish.");
+  const version = ++findVersion, model = state.model;
   setJob("find"); findBusy(msg);
   const r = await post(url, body).catch((e) => ({ error: String(e) }));
   setJob(null);
+  if (version !== findVersion || state.model !== model || state.fmode !== kind) return;
   if (r.error) { toast(r.error); found = null; return renderResults(); }
   found = kind === "text" ? { kind, ...r, rows: r.overall } : { kind, rows: r.results }; tokSel = -1; renderResults();
   if (found.rows[0]) inspect(found.rows[0]);
@@ -714,55 +745,74 @@ function renderResults() {
     const sc = r.score !== undefined ? `${r.score > 0 ? "+" : ""}${(+r.score).toFixed(Math.abs(r.score) < 10 ? 2 : 1)}` : s < 0 ? "−" : "+";
     row.innerHTML = `<span class="nid">${nidHTML(r)}</span><span class="sc ${s < 0 ? "n" : "p"}">${sc}</span><div class="chips"></div><button class="mini" title="Add to the stack">${ICON.plus}</button>`;
     lens(r).then((l) => { row.querySelector(".chips").innerHTML = chipsHTML(s < 0 ? l.down : l.up, s < 0 ? "down" : "up", 8); });
-    row.querySelector(".mini").onclick = (e) => { e.stopPropagation(); addPush({ layer: r.layer, neuron: r.neuron, expert: r.expert || "", dose: s * M().dose }); };
+    row.querySelector(".mini").onclick = (e) => { e.stopPropagation(); addPush({ layer: r.layer, neuron: r.neuron, expert: expertKey(r.expert), dose: s * M().dose }); };
     row.onclick = () => inspect(r);
     if (insp && same(insp, r)) row.classList.add("sel");
     box.append(row);
   });
 }
-const same = (a, b) => a.layer === b.layer && a.neuron === b.neuron && (a.expert || "") === (b.expert || "");
+const same = (a, b) => a.layer === b.layer && a.neuron === b.neuron && (expertKey(a.expert)) === (expertKey(b.expert));
 function inspect(r) {
-  insp = { layer: r.layer, neuron: r.neuron, expert: r.expert || null, sign: signOf(r) };
+  insp = { layer: r.layer, neuron: r.neuron, expert: expertKey(r.expert) || null, sign: signOf(r) };
   document.querySelectorAll("#results .row").forEach((x, i) => x.classList.toggle("sel", !!found && same(found.rows[i], insp)));
   renderInspector();
 }
 async function renderInspector() {
+  const version = ++inspectorVersion, model = state.model, text = found?.kind === "text" ? found : null;
   const box = $("inspector");
   if (!insp) { box.innerHTML = `<div class="empty">Pick a neuron to see what it writes,<br>where it fires, and to push it.</div>`; return; }
   const r = insp, d0 = r.sign * M().dose;
   box.innerHTML = `
-    <div><h3>${nidHTML(r)}</h3><div class="sub">${M().label} · layer ${r.layer} of ${M().layers}${M().expert ? (r.expert ? ` · routed expert ${r.expert}` : " · shared expert") : ""}</div></div>
+    <div><h3>${nidHTML(r)}</h3><div class="sub">${M().label} · layer ${r.layer} of ${M().layers}${M().expert ? (expertKey(r.expert) ? ` · routed expert ${esc(r.expert)}` : " · shared expert") : ""}</div></div>
     <div class="act"><input class="text num" id="idose" value="${fmt(d0)}"><button class="btn primary" id="iadd">${ICON.plus} Push</button><button class="btn" id="itry">${ICON.play} Try in chat</button></div>
     <section id="itrace" hidden><span>On this text</span><div class="trace"></div></section>
     <section><span>Writes toward</span><div class="chips" id="iup"><span class="spin"></span></div></section>
     <section><span>Writes away from</span><div class="chips" id="idown"></div></section>`;
   const dose = () => { const v = parseFloat($("idose").value.replace("−", "-")); return isNaN(v) ? d0 : v; };
-  $("iadd").onclick = () => addPush({ layer: r.layer, neuron: r.neuron, expert: r.expert || "", dose: dose() });
-  $("itry").onclick = () => { addPush({ layer: r.layer, neuron: r.neuron, expert: r.expert || "", dose: dose() }); setTab("chat"); if (!$("cinput").value.trim()) $("cinput").value = CHAT_SUGGEST[0]; sendChat(); };
-  const l = await lens(r, 24); if (insp !== r) return;
+  $("iadd").onclick = () => addPush({ layer: r.layer, neuron: r.neuron, expert: expertKey(r.expert), dose: dose() });
+  $("itry").onclick = () => { addPush({ layer: r.layer, neuron: r.neuron, expert: expertKey(r.expert), dose: dose() }); setTab("chat"); if (!$("cinput").value.trim()) $("cinput").value = CHAT_SUGGEST[0]; sendChat(); };
+  const l = await lens(r, 24); if (version !== inspectorVersion || insp !== r || state.model !== model) return;
   $("iup").innerHTML = chipsHTML(l.up, "up", 24) || '<span class="chip plain">—</span>'; $("idown").innerHTML = chipsHTML(l.down, "down", 24);
-  if (found?.kind === "text") {
-    const q = new URLSearchParams({ model: state.model, layer: r.layer, neuron: r.neuron, ...(r.expert ? { expert: r.expert } : {}) });
-    const t = await get("/api/trace?" + q); if (insp !== r || !t.acts) return;
+  if (text && found === text) {
+    const q = new URLSearchParams({ model, layer: r.layer, neuron: r.neuron, ...(expertKey(r.expert) ? { expert: expertKey(r.expert) } : {}) });
+    const t = await get("/api/trace?" + q).catch(() => ({})); if (version !== inspectorVersion || insp !== r || found !== text || state.model !== model || !t.acts) return;
     const max = Math.max(...t.acts.map(Math.abs), 1e-6);
     $("itrace").hidden = false;
-    $("itrace").querySelector(".trace").innerHTML = found.tokens.map((tok, i) => `<span style="background:${t.acts[i] ? heat(t.acts[i], max, t.acts[i] < 0) : "transparent"}" title="${t.acts[i]}">${esc(tok)}</span>`).join("");
+    $("itrace").querySelector(".trace").innerHTML = text.tokens.map((tok, i) => `<span style="background:${t.acts[i] ? heat(t.acts[i], max, t.acts[i] < 0) : "transparent"}" title="${t.acts[i]}">${esc(tok)}</span>`).join("");
   }
 }
 
 // ============================================================ Agent
-let examples = [], session = null, lanesEv = {}, laneFiles = {}, touched = {}, wsLane = null, viewing = null;
+let examples = [], session = null, sessionStarting = null, lanesEv = {}, laneFiles = {}, touched = {}, wsLane = null, viewing = null;
 const laneSpec = () => ({ steered: { steered: 1 }, compare: { steered: 1, plain: 0 }, plain: { plain: 0 } })[state.lanes];
-for (const b of $("lanemode").children) b.onclick = () => { if (job) return; state.lanes = b.dataset.l; save(); dropSession(); renderLanes(); };
-function dropSession() { session = null; lanesEv = {}; laneFiles = {}; touched = {}; viewing = null; renderLanes(); }
+for (const b of $("lanemode").children) b.onclick = async () => { if (job || !(await dropSession())) return; state.lanes = b.dataset.l; save(); renderLanes(); };
+async function dropSession() {
+  if (job) return false;
+  setJob("session");
+  try {
+    const r = await post("/api/agent/close", {});
+    if (r.error) { toast(r.error); return false; }
+    session = null; lanesEv = {}; laneFiles = {}; touched = {}; viewing = null;
+    $("viewer").hidden = true; renderLanes(); return true;
+  } catch (e) { toast(String(e)); return false; }
+  finally { setJob(null); }
+}
 $("anew").onclick = () => { if (!job) dropSession(); };
 async function ensureSession() {
   if (session) return true;
-  const r = await post("/api/agent/new", { model: state.model, lanes: laneSpec() });
-  if (r.error) { toast(r.error); return false; }
-  session = { model: state.model, lanes: r.lanes }; wsLane = r.lanes[0];
-  for (const k of r.lanes) { lanesEv[k] = []; laneFiles[k] = {}; touched[k] = {}; }
-  return true;
+  if (sessionStarting) return sessionStarting;
+  const ownsJob = !job;
+  if (ownsJob) setJob("session");
+  sessionStarting = (async () => {
+    const r = await post("/api/agent/new", { model: state.model, lanes: laneSpec() });
+    if (r.error) { toast(r.error); return false; }
+    session = { model: state.model, lanes: r.lanes }; wsLane = r.lanes[0];
+    for (const k of r.lanes) { lanesEv[k] = []; laneFiles[k] = {}; touched[k] = {}; }
+    return true;
+  })();
+  try { return await sessionStarting; }
+  catch (e) { toast(String(e)); return false; }
+  finally { sessionStarting = null; if (ownsJob) setJob(null); }
 }
 function renderLanes() {
   for (const b of $("lanemode").children) b.classList.toggle("on", b.dataset.l === state.lanes);
@@ -834,11 +884,11 @@ async function sendAgent() {
   if (job === "agent") return stopJob(); if (job) return;
   const text = $("ainput").value.trim(); if (!text) return;
   setJob("agent");
-  if (!(await ensureSession())) return setJob(null);
-  $("ainput").value = ""; autosize($("ainput")); $("asuggest").hidden = true;
-  for (const k of session.lanes) { lanesEv[k].push({ type: "user", text }); laneBusy[k] = true; paintLane(k); }
-  const opts = { ...state.opts, system: state.opts.agent_system.trim(), thinking: state.opts.agent_thinking };
   try {
+    if (!(await ensureSession())) return;
+    $("ainput").value = ""; autosize($("ainput")); $("asuggest").hidden = true;
+    for (const k of session.lanes) { lanesEv[k].push({ type: "user", text }); laneBusy[k] = true; paintLane(k); }
+    const opts = { ...state.opts, system: state.opts.agent_system.trim(), thinking: state.opts.agent_thinking };
     await sse("/api/agent/send", { text, pushes: pushes(), opts }, (ev) => {
       const k = ev.lane; if (k === undefined) return;
       const evs = lanesEv[k], last = evs[evs.length - 1];
@@ -853,7 +903,7 @@ async function sendAgent() {
       paintLane(k);
     });
   } catch (e) { toast(String(e)); }
-  laneBusy = {}; setJob(null); for (const k of session.lanes) paintLane(k);
+  finally { laneBusy = {}; setJob(null); for (const k of session?.lanes || []) paintLane(k); }
 }
 bindComposer($("ainput"), sendAgent);
 $("aform").onsubmit = (e) => { e.preventDefault(); sendAgent(); };
@@ -893,7 +943,7 @@ const say = (t) => { setTab("chat"); $("cinput").value = t; autosize($("cinput")
 const LESSONS = [
   { title: "Push one neuron", sub: "Make Flash-Next a conspiracy theorist", steps: [
     { text: "A neuron writes a fixed vector into the residual stream. A <b>push</b> adds that vector at every token, as if the neuron fired harder. This puts layer 14, expert 18, neuron 305 at dose +10 on the steering rail.",
-      act: () => { setModel("flash"); state.stacks.flash = [{ layer: 14, expert: "18", neuron: 305, dose: 10, on: true }]; state.steer = true; renderStack(); save(); } },
+      act: async () => { if (!(await setModel("flash"))) return; state.stacks.flash = [{ layer: 14, expert: "18", neuron: 305, dose: 10, on: true }]; state.steer = true; renderStack(); save(); } },
     { text: "Orange chips are the tokens its vector points toward (its <b>logit lens</b>), blue the ones it points away from. Ask something neutral: column <code>0</code> is the stock model, <code>+</code> has the push.",
       act: () => { state.factors.flash = [0, 1]; resetChat(); say("Tell me about the moon landing."); } },
     { text: "A column's glyph is its dose factor: click it to type another, or add a column with <code>+</code>. A sweep shows where the behavior turns on.",
@@ -915,11 +965,11 @@ const LESSONS = [
     { text: "<b>Contrast</b> ranks neurons by how much more they fire on prompts with a trait (A) than on matched prompts without it (B). Positive rows fire more on A; push them with a positive dose.",
       act: () => { setTab("find"); setFMode("contrast"); $("fa").value = CONSP_A; $("fb").value = CONSP_B; $("fcontrast").requestSubmit(); } },
     { text: "On Qwen3.5-4B the same sets put neuron-explorer's conspiracy pair first: L19 N7839 down and L10 N7757 up.",
-      act: () => { setModel("small"); setTab("find"); setFMode("contrast"); $("fa").value = CONSP_A; $("fb").value = CONSP_B; $("fcontrast").requestSubmit(); } },
+      act: async () => { if (!(await setModel("small"))) return; setTab("find"); setFMode("contrast"); $("fa").value = CONSP_A; $("fb").value = CONSP_B; $("fcontrast").requestSubmit(); } },
   ] },
   { title: "A steered agent", sub: "The same request, two sandboxes", steps: [
     { text: "<b>Agent</b> is a conversation with a model that has a shell and file tools, each lane in a fresh Linux virtual machine with no network and no host files. Nothing tells it so: to the model it is user <code>dev</code> in <code>~/project</code>. <b>Compare</b> runs a steered and an unsteered lane side by side.",
-      act: () => { setTab("agent"); state.lanes = "compare"; dropSession(); } },
+      act: async () => { if (!(await dropSession())) return; setTab("agent"); state.lanes = "compare"; save(); renderLanes(); } },
     { text: "Pick an example or write your own request. Files the agent changes are marked in the workspace; click one to read it, a tool row to expand it. Keep talking to it as you would to any coding agent.",
       act: () => useExample(examples[1]) },
   ] },
@@ -939,7 +989,7 @@ function renderLearn() {
   let at = 0;
   const steps = LESSONS[lesson].steps.map((s, i) => {
     const d = el("div", "step", `<div>${s.text}</div>`), b = el("button", "btn", s.act ? "Show me" : "Got it");
-    b.onclick = () => { s.act && s.act(); at = Math.max(at, i + 1); paint(); }; d.append(b); body.append(d); return d;
+    b.onclick = async () => { if (s.act && job) return toast("Wait for the current request to finish."); if (s.act) await s.act(); at = Math.max(at, i + 1); paint(); }; d.append(b); body.append(d); return d;
   });
   if (lesson < LESSONS.length - 1) { const n = el("button", "btn", `Next: ${LESSONS[lesson + 1].title} ›`); n.onclick = () => { lesson++; renderLearn(); }; body.append(n); }
   const paint = () => steps.forEach((d, i) => { d.className = "step " + (i < at ? "done" : i === at ? "now" : "later"); });

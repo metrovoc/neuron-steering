@@ -77,10 +77,13 @@ def ensure_image():
     if container("image", "inspect", IMAGE).returncode == 0:
         return
     container("system", "start", "--enable-kernel-install", timeout=600)
-    with tempfile.TemporaryDirectory() as d:
-        open(os.path.join(d, "Dockerfile"), "w").write(DOCKERFILE)
-        b = container("build", "-t", IMAGE, "-f", os.path.join(d, "Dockerfile"), d, timeout=900)
-    container("builder", "stop")
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "Dockerfile"), "w") as f:
+                f.write(DOCKERFILE)
+            b = container("build", "-t", IMAGE, "-f", os.path.join(d, "Dockerfile"), d, timeout=900)
+    finally:
+        container("builder", "stop")
     if b.returncode:
         raise RuntimeError("container build: " + b.stderr.strip()[-400:])
 
@@ -89,9 +92,16 @@ class Sandbox:
     def __init__(self):
         self.name = "devbox-" + uuid.uuid4().hex[:6]  # also its hostname
         ensure_image()
-        r = container("run", "-d", "--rm", "--name", self.name, *RUN_ARGS, IMAGE, "bash", "-c", "exec -a /sbin/init sleep infinity", timeout=120)
-        if r.returncode:
-            raise RuntimeError("container: " + (r.stderr.strip() or "could not start a VM"))
+        try:
+            r = container("run", "-d", "--rm", "--name", self.name, *RUN_ARGS, IMAGE, "bash", "-c", "exec -a /sbin/init sleep infinity", timeout=120)
+            if r.returncode:
+                raise RuntimeError("container: " + (r.stderr.strip() or "could not start a VM"))
+        except Exception as error:
+            try:
+                self.close()
+            except Exception as cleanup_error:
+                raise error from cleanup_error
+            raise
 
     def run(self, command, timeout=120):
         try:
@@ -120,7 +130,10 @@ class Sandbox:
             return {}
 
     def close(self):
-        container("delete", "--force", self.name)
+        r = container("delete", "--force", self.name)
+        error = r.stderr.strip()
+        if r.returncode and f"container with ID {self.name} not found" not in error:
+            raise RuntimeError(f"Could not delete {self.name}: {error or f'exit {r.returncode}'}")
 
 
 def cleanup():
@@ -159,7 +172,9 @@ class Lane:
             if name == "write_file":
                 old, _ = self.box.read(a["path"])
                 code, err = self.box.write(a["path"], a["content"])
-                return code == 0, err or f"Wrote {a['path']}", {"diff": diff(a["path"], old or "", a["content"])}
+                if code:
+                    return False, err or f"Could not write {a['path']} (exit {code})", {}
+                return True, f"Wrote {a['path']}", {"diff": diff(a["path"], old or "", a["content"])}
             if name == "edit_file":
                 old, err = self.box.read(a["path"])
                 if old is None:
@@ -169,7 +184,9 @@ class Lane:
                     return False, f"old_text occurs {n} times in {a['path']}; it must occur exactly once", {}
                 new = old.replace(a["old_text"], a["new_text"])
                 code, err = self.box.write(a["path"], new)
-                return code == 0, err or f"Edited {a['path']}", {"diff": diff(a["path"], old, new)}
+                if code:
+                    return False, err or f"Could not edit {a['path']} (exit {code})", {}
+                return True, f"Edited {a['path']}", {"diff": diff(a["path"], old, new)}
             return False, f"Unknown tool {name}", {}
         except KeyError as e:
             return False, f"Missing argument {e} for {name}", {}
@@ -184,6 +201,8 @@ class Lane:
             if cancel.is_set():
                 break
             yield {"lane": self.key, "type": "step"}
+            if cancel.is_set():
+                break
             content, reasoning, calls = "", "", []
             for kind, v in model.agent_stream(self.messages, TOOLS, pushes, self.factor, opts, cancel):
                 if kind == "calls":
@@ -194,6 +213,8 @@ class Lane:
                 else:
                     reasoning += v
                 yield {"lane": self.key, "type": kind, "delta": v}
+            if cancel.is_set():
+                break
             self.calls += 1
             msg = {"role": "assistant", "content": content.strip()}
             if reasoning.strip():
@@ -209,8 +230,12 @@ class Lane:
                 cid = f"call_{self.calls}_{i}"
                 yield {"lane": self.key, "type": "tool", "id": cid, "name": c["name"], "args": c["arguments"]}
                 before = self.box.listing()
-                ok, out, extra = self.tool(c["name"], c["arguments"] if isinstance(c["arguments"], dict) else {})
-                after = self.box.listing()
+                if cancel.is_set():
+                    ok, out, extra = False, "Cancelled before execution", {}
+                    after = before
+                else:
+                    ok, out, extra = self.tool(c["name"], c["arguments"] if isinstance(c["arguments"], dict) else {})
+                    after = self.box.listing()
                 changed = sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
                 yield {"lane": self.key, "type": "result", "id": cid, "ok": ok, "output": out, "changed": changed,
                        "files": {k: v[0] for k, v in after.items()}, **extra}
@@ -221,18 +246,35 @@ class Lane:
 class Session:
     def __init__(self, model, factors):
         self.model = model
-        self.lanes = {str(k): Lane(str(k), f) for k, f in factors.items()}
+        self.lanes = {}
+        try:
+            for k, factor in factors.items():
+                self.lanes[str(k)] = Lane(str(k), factor)
+        except Exception as error:
+            try:
+                self.close()
+            except Exception as cleanup_error:
+                raise error from cleanup_error
+            raise
 
     def put(self, path, content):
-        for lane in self.lanes.values():
-            lane.box.write(path, content)
+        for key, lane in self.lanes.items():
+            code, err = lane.box.write(path, content)
+            if code:
+                raise RuntimeError(f"Could not write {path} in lane {key}: {err or f'exit {code}'}")
 
     def files(self, key):
         return {k: v[0] for k, v in self.lanes[key].box.listing().items()}
 
     def close(self):
+        errors = []
         for lane in self.lanes.values():
-            lane.box.close()
+            try:
+                lane.box.close()
+            except Exception as e:
+                errors.append(e)
+        if errors:
+            raise ExceptionGroup("Could not close agent sandboxes", errors)
 
     def send(self, text, pushes, opts, cancel):
         """Every lane takes the message; they take turns a model call at a time so both stream."""

@@ -20,7 +20,11 @@ class Capture:
 
     def __init__(self, path):
         self.ids, self.w, self.sg, self.h, self.hs = {}, {}, {}, {}, {}
-        b = open(path, "rb").read() if os.path.exists(path) else b""
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                b = f.read()
+        else:
+            b = b""
         i = 0
         while i < len(b):
             tn = int(np.frombuffer(b, np.int32, 1, i)[0])
@@ -52,7 +56,7 @@ class Capture:
         """Every neuron of one layer at every position: {expert: [T, 640]} for the routed experts that appear (zero where
         not routed) and 'shared': [T, 640]."""
         ps = self.positions()
-        out = {"shared": np.stack([self.hs[p][layer] for p in ps])}
+        out = {"shared": np.stack([self.hs[p][layer] for p in ps]) if ps else np.empty((0, F), np.float32)}
         for ti, p in enumerate(ps):
             for k, e in enumerate(self.ids[p][layer]):
                 out.setdefault(int(e), np.zeros((len(ps), F), np.float32))[ti] = self.h[p][layer, k]
@@ -70,9 +74,9 @@ def capture(port, path, prompt, max_tokens=1):
                 "strata_checkpoint": False}
         url = f"http://127.0.0.1:{port}/v1/chat/completions"
         req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=600).read()
+        with urllib.request.urlopen(req, timeout=600) as res:
+            res.read()
         time.sleep(0.05)
+        return Capture(path)
     finally:
-        cap = Capture(path)
         os.remove(path)
-    return cap

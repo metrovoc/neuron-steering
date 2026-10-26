@@ -253,11 +253,15 @@ class Small:
     def generate_rows(self, rows_ids, pushes, factors, max_new, cancel=None, s=None):
         """Decodes the rows in one batch, row r under the pushes times factors[r], sampled per s (see sampling). Yields
         (row, delta)."""
+        if cancel is not None and cancel.is_set():
+            return
         s = s or {"temperature": 0.0}
         rt = self.runtime()
         self.ensure()
         gen = torch.Generator().manual_seed(s["seed"]) if "seed" in s else None
         with rt.lock:
+            if cancel is not None and cancel.is_set():
+                return
             try:
                 push = self.push_entries(pushes, factors) if pushes else None
                 T = max(map(len, rows_ids))
@@ -301,6 +305,8 @@ class Small:
 
     def chat(self, convs, pushes, factors, opts, cancel=None):
         """convs: one message list per column. Yields (column index, kind, delta), kind "think" or "text"."""
+        if cancel is not None and cancel.is_set():
+            return
         self.ensure()
         think, s = sampling(opts)
         split = [ThinkSplit(think) for _ in convs]
@@ -316,6 +322,8 @@ class Small:
     def agent_stream(self, messages, tools, pushes, factor, opts, cancel=None):
         """One model call: yields ("think", delta) and ("text", delta) for what it says before any tool call, then
         ("calls", [...])."""
+        if cancel is not None and cancel.is_set():
+            return
         self.ensure()
         think, s = sampling(opts)
         split, text, shown = ThinkSplit(think), "", 0
@@ -336,6 +344,8 @@ class Small:
                 if safe > shown:
                     yield "text", text[shown:safe]
                     shown = safe
+        if cancel is not None and cancel.is_set():
+            return
         _, calls = parse_xml_calls(text)
         yield "calls", calls
 
@@ -353,7 +363,7 @@ class Flash:
     def __init__(self):
         self.proc = None
         self.lock = threading.Lock()
-        self.norms = {int(k): v for k, v in json.load(open(os.path.join(ROOT, "out", "rnorm.json"))).items()}
+        self.norms = None
         self.live = os.path.join(WORK, "flash-live.f32")
         self.acts_file = os.path.join(WORK, "flash-acts.bin")
         self.lens_w = None
@@ -374,6 +384,7 @@ class Flash:
                 self.proc.wait(30)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+                self.proc.wait()
         self.proc = None
 
     def status(self):
@@ -381,7 +392,8 @@ class Flash:
 
     def ready(self):
         try:
-            urllib.request.urlopen(f"http://127.0.0.1:{STRATA_PORT}/v1/models", timeout=2)
+            with urllib.request.urlopen(f"http://127.0.0.1:{STRATA_PORT}/v1/models", timeout=2):
+                pass
             return True
         except Exception:
             return False
@@ -413,9 +425,16 @@ class Flash:
     def write_live(self, v):
         np.ascontiguousarray(v, np.float32).tofile(self.live + ".tmp")
         os.replace(self.live + ".tmp", self.live)
+        self.live_key = None
 
     def vector(self, pushes):
         V = np.zeros((48, 2560), np.float32)
+        if pushes and self.norms is None:
+            try:
+                with open(os.path.join(ROOT, "out", "rnorm.json")) as f:
+                    self.norms = {int(k): v for k, v in json.load(f).items()}
+            except FileNotFoundError as e:
+                raise RuntimeError("Flash steering requires residual norms in out/rnorm.json.") from e
         for p in pushes:
             if p["layer"] < 1:
                 raise ValueError("layer 0 cannot be steered")
@@ -596,10 +615,14 @@ class Flash:
 
     # ---- generation
     def chat(self, convs, pushes, factors, opts, cancel=None):
+        if cancel is not None and cancel.is_set():
+            return
         self.ensure()
         think, s = sampling(opts)
         for c, (msgs, f) in enumerate(zip(convs, factors)):
             with self.lock:
+                if cancel is not None and cancel.is_set():
+                    return
                 self.set_vector(pushes, f)
                 body = {"model": "x", "messages": msgs, **s, "max_tokens": int(opts.get("max_tokens", 4096)),
                         "stream": True, "chat_template_kwargs": {"enable_thinking": think},
@@ -607,7 +630,7 @@ class Flash:
                 with self.request(body) as res:  # leaving it early closes the stream, which stops the engine
                     for line in res:
                         if cancel is not None and cancel.is_set():
-                            break
+                            return
                         line = line.decode().strip()
                         if not line.startswith("data: ") or line == "data: [DONE]":
                             continue
@@ -622,9 +645,13 @@ class Flash:
 
     def agent_stream(self, messages, tools, pushes, factor, opts, cancel=None):
         """One model call: yields ("text", delta) as the reply streams, then ("calls", [...])."""
+        if cancel is not None and cancel.is_set():
+            return
         self.ensure()
         think, s = sampling(opts)
         with self.lock:
+            if cancel is not None and cancel.is_set():
+                return
             self.set_vector(pushes, factor)
             body = {"model": "x", "messages": messages, "tools": tools, "stream": True, **s,
                     "max_tokens": int(opts.get("max_tokens", 4096)), "chat_template_kwargs": {"enable_thinking": think},
@@ -633,7 +660,7 @@ class Flash:
             with self.request(body) as res:
                 for line in res:
                     if cancel is not None and cancel.is_set():
-                        break
+                        return
                     line = line.decode().strip()
                     if not line.startswith("data: ") or line == "data: [DONE]":
                         continue
@@ -646,6 +673,8 @@ class Flash:
                         p = parts.setdefault(tc["index"], {"name": "", "arguments": ""})
                         p["name"] += tc.get("function", {}).get("name") or ""
                         p["arguments"] += tc.get("function", {}).get("arguments") or ""
+        if cancel is not None and cancel.is_set():
+            return
         calls = []
         for p in parts.values():
             try:
