@@ -68,17 +68,21 @@ attitude. The doses Flash-Next needs (×8–12) are much larger than Qwen3.5-4B'
 uv run python app/server.py      # http://127.0.0.1:8787
 ```
 
-The rail holds the stack of pushes for the selected model; the tabs use it.
+The rail holds the steering stack for the selected model: any layer, expert and neuron at any dose, each push
+switchable, the whole stack behind one switch. Its menu loads saved or example stacks and downloads the stack as a
+llama.cpp control vector. Temperature, reply length and system prompts are under the settings button.
 
-- **Find** ranks neurons three ways: by the tokens their logit lens points to (Words), by how far past their usual range
-  they fire on a text, token by token (Text), and by how much more they fire on one set of prompts than another
-  (Contrast). On Qwen3.5-4B, Contrast with conspiratorial against neutral sentences puts L19 N7839 (−) and L10 N7757 (+)
+- **Chat** sends each message to every column; a column's glyph is its factor on the stack, and each column continues
+  its own conversation.
+- **Find** ranks neurons three ways: by the tokens their logit lens points to (Words, which also takes an address like
+  `L14 E18 N305`), by how far past their usual range they fire on a text, token by token (Text), and by how much more
+  they fire on one set of prompts than another (Contrast). The inspector shows a neuron's lens and where it fires, and
+  pushes it. On Qwen3.5-4B, Contrast with conspiratorial against neutral sentences puts L19 N7839 (−) and L10 N7757 (+)
   first, neuron-explorer's conspiracy pair.
-- **Steer** compares greedy replies in columns, each column the stack times its factor, and continues every column's
-  own conversation; ⤓ downloads the stack as a llama.cpp control vector.
-- **Agent** runs the same task in one lane per factor, each lane in its own container: Docker Desktop's Linux VM, no
-  network, no mounts, read-only root, all capabilities dropped (the flags of `vm_agent_eval.py`).
-- **?** opens lessons that drive the app step by step.
+- **Agent** is a conversation with a coding agent that has a shell and file tools, steered, unsteered, or both side by
+  side. Each lane works in its own container: Docker Desktop's Linux VM, no network, no mounts, read-only root, all
+  capabilities dropped. Files can be dropped into the workspace, and the ones the agent changes are marked.
+- The book button opens lessons that drive the app step by step.
 
 Flash-Next runs in one Strata server started with `STRATA_METAL_CVEC_LIVE` (the vector is re-read from a file, so a
 new stack or dose needs no restart) and `STRATA_METAL_ACTS` (routing and down-projection inputs captured while a

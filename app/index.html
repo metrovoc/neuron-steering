@@ -6,342 +6,493 @@
 <title>Neuron Steering</title>
 <style>
   :root {
-    --bg: #0d0e11; --panel: #15171c; --raise: #1c1f26; --hover: #22262e; --line: #262a33; --text: #e8e8ec; --dim: #8b8f9a;
-    --faint: #5a5f6b; --up: #f5a524; --up-bg: rgba(245, 165, 36, .12); --down: #4cc9f0; --down-bg: rgba(76, 201, 240, .12);
-    --zero: #a0a4ae; --bad: #ff6b6b; --good: #5fd38d;
+    --bg: #0e0f12; --panel: #15171c; --raise: #1b1e25; --hover: #22262e; --line: #262a33; --line2: #323743;
+    --text: #e9e9ee; --body: #d3d5db; --dim: #8b8f9a; --faint: #5d626e;
+    --up: #f5a524; --up-bg: rgba(245, 165, 36, .13); --down: #4cc9f0; --down-bg: rgba(76, 201, 240, .13);
+    --ok: #4fd18b; --ok-bg: rgba(79, 209, 139, .12); --bad: #ff6b6b; --bad-bg: rgba(255, 107, 107, .12); --zero: #a0a4ae;
+    --shadow: 0 16px 48px rgba(0, 0, 0, .45);
     --mono: ui-monospace, "SF Mono", Menlo, monospace; --sans: -apple-system, "SF Pro Text", "Inter", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme=dark]) {
+      --bg: #f7f7f8; --panel: #ffffff; --raise: #f1f2f4; --hover: #e9eaee; --line: #e3e4e8; --line2: #d3d5db;
+      --text: #15161a; --body: #2c2e35; --dim: #6b6f7a; --faint: #a0a4ae;
+      --up: #c27400; --up-bg: rgba(220, 140, 20, .13); --down: #0a83b0; --down-bg: rgba(20, 140, 200, .11);
+      --ok: #198a52; --ok-bg: rgba(25, 138, 82, .1); --bad: #d33a3a; --bad-bg: rgba(211, 58, 58, .09); --zero: #6b6f7a;
+      --shadow: 0 16px 48px rgba(20, 20, 40, .14);
+    }
   }
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); }
-  body { display: grid; grid-template-columns: 320px 1fr; overflow: hidden; }
-  input, button, textarea { font: inherit; color: inherit; }
+  body { display: grid; grid-template-rows: 52px 1fr; grid-template-columns: 300px 1fr; overflow: hidden; }
+  input, button, textarea, select { font: inherit; color: inherit; }
   button { cursor: pointer; }
+  button:disabled { cursor: default; opacity: .5; }
   [hidden] { display: none !important; }
   ::-webkit-scrollbar { width: 8px; height: 8px; } ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+  ::placeholder { color: var(--faint); }
+  .mono { font-family: var(--mono); }
 
-  /* ---- the rail: model, saved stacks, the stack */
-  aside { background: var(--panel); border-right: 1px solid var(--line); padding: 18px 16px; display: flex; flex-direction: column;
-          gap: 14px; overflow-y: auto; }
-  .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--bg); border: 1px solid var(--line);
-         border-radius: 10px; padding: 3px; }
-  .seg button { background: none; border: 0; border-radius: 7px; padding: 6px 10px; color: var(--dim); font-size: 13px; font-weight: 500; white-space: nowrap; }
-  .seg button.on { background: var(--raise); color: var(--text); }
-  .pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .pill { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; color: var(--dim); font-size: 12.5px;
-          display: inline-flex; gap: 6px; align-items: center; }
-  .pill:hover, .pill.on { color: var(--text); border-color: var(--faint); }
-  .pill .del { color: var(--faint); display: none; } .pill:hover .del { display: inline; } .pill .del:hover { color: var(--text); }
-  .pill.icon { padding: 2px 8px; }
-  .namebox { background: var(--bg); border: 1px solid var(--faint); border-radius: 999px; padding: 2px 10px; width: 120px; outline: 0; font-size: 12.5px; }
+  /* ---------- top bar */
+  header.top { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .modelbtn { display: flex; align-items: center; gap: 9px; background: none; border: 1px solid transparent; border-radius: 9px; padding: 5px 10px; font-weight: 600; width: 272px; }
+  .modelbtn:hover { background: var(--raise); }
+  .modelbtn .caret { margin-left: auto; color: var(--faint); font-size: 11px; }
+  .led { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  .led.ready { background: var(--ok); } .led.starting { background: var(--up); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .tabs { display: flex; gap: 2px; }
+  .tabs button { background: none; border: 0; border-radius: 8px; padding: 6px 14px; color: var(--dim); font-weight: 500; }
+  .tabs button:hover { color: var(--text); }
+  .tabs button.on { background: var(--raise); color: var(--text); }
+  .top .right { margin-left: auto; display: flex; gap: 6px; }
+  .icon { width: 32px; height: 32px; border-radius: 8px; border: 0; background: none; color: var(--dim); display: grid; place-items: center; font-size: 15px; }
+  .icon:hover, .icon.on { background: var(--raise); color: var(--text); }
+  svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
-  .stack { display: flex; flex-direction: column; gap: 8px; }
-  .card { background: var(--raise); border: 1px solid var(--line); border-radius: 12px; padding: 10px 11px; display: flex; flex-direction: column; gap: 8px; }
+  /* ---------- menus and popovers */
+  .pop { position: fixed; z-index: 20; background: var(--panel); border: 1px solid var(--line2); border-radius: 12px; box-shadow: var(--shadow); padding: 6px; min-width: 220px; }
+  .pop .item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: none; border: 0; border-radius: 8px; padding: 7px 10px; color: var(--body); }
+  .pop .item:hover { background: var(--raise); color: var(--text); }
+  .pop .item small { margin-left: auto; color: var(--faint); font: 11.5px var(--mono); }
+  .pop .item .del { margin-left: auto; color: var(--faint); visibility: hidden; padding: 0 4px; }
+  .pop .item:hover .del { visibility: visible; } .pop .item .del:hover { color: var(--bad); }
+  .pop .sep { height: 1px; background: var(--line); margin: 5px 4px; }
+  .pop .head { color: var(--faint); font-size: 11.5px; padding: 6px 10px 3px; text-transform: uppercase; letter-spacing: .04em; }
+  .pop .nameitem { padding: 4px 6px; } .pop .nameitem input { width: 100%; }
+  .settings { width: 380px; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field > span { font-size: 12.5px; color: var(--dim); display: flex; justify-content: space-between; }
+  .field > span b { font: 12.5px var(--mono); color: var(--text); font-weight: 500; }
+  .text { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; outline: 0; resize: vertical; font-size: 13px; }
+  .text:focus { border-color: var(--faint); }
+  .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 2px; }
+  .seg button { background: none; border: 0; border-radius: 7px; padding: 4px 12px; color: var(--dim); font-size: 13px; font-weight: 500; white-space: nowrap; }
+  .seg button.on { background: var(--raise); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+  input[type=range] { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: var(--line2); outline: 0; width: 100%; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--text); border: 3px solid var(--panel); }
+
+  /* ---------- the steering rail */
+  aside { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  .railhead { display: flex; align-items: center; gap: 8px; padding: 14px 14px 10px; }
+  .railhead b { font-size: 13px; }
+  .switch { width: 30px; height: 18px; border-radius: 9px; background: var(--line2); border: 0; position: relative; padding: 0; flex: none; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--panel); transition: left .15s; }
+  .switch.on { background: var(--up); } .switch.on::after { left: 14px; }
+  .railhead .icon { margin-left: auto; width: 28px; height: 28px; }
+  .stack { flex: 1; overflow-y: auto; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .stack.muted .card { opacity: .45; }
+  .card { background: var(--raise); border: 1px solid var(--line); border-radius: 11px; padding: 9px 10px; display: flex; flex-direction: column; gap: 7px; }
   .card.off { opacity: .45; }
-  .ids { display: flex; gap: 5px; align-items: center; }
-  .dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--faint); background: none; padding: 0; flex: none; }
-  .dot.on { background: var(--up); border-color: var(--up); }
-  .dot.on.neg { background: var(--down); border-color: var(--down); }
-  .ids label { display: flex; align-items: center; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding-left: 7px; }
-  .ids label span { color: var(--faint); font: 11px var(--mono); }
-  .ids input { width: 40px; background: none; border: 0; outline: 0; padding: 4px 5px; font: 12.5px var(--mono); }
-  .ids input.wide { width: 50px; }
-  .x { margin-left: auto; background: none; border: 0; color: var(--faint); font-size: 17px; line-height: 1; padding: 0 2px; }
-  .x:hover { color: var(--text); }
-  .dose { display: grid; grid-template-columns: 1fr 54px; gap: 8px; align-items: center; }
-  .dose input.num { background: none; border: 0; outline: 0; font: 13px var(--mono); text-align: right; width: 100%; }
-  input[type=range] { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: var(--line); outline: 0; width: 100%; }
-  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 15px; height: 15px; border-radius: 50%; background: var(--text); border: 3px solid var(--raise); }
-  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
-  .chip { font: 11.5px var(--mono); padding: 1px 6px; border-radius: 5px; white-space: pre; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
-  .chip.up { background: var(--up-bg); color: var(--up); }
-  .chip.down { background: var(--down-bg); color: var(--down); }
-  .add { background: none; border: 1px dashed var(--line); border-radius: 12px; padding: 8px; color: var(--faint); font-size: 18px; line-height: 1; }
-  .add:hover { color: var(--text); border-color: var(--faint); }
+  .ids { display: flex; gap: 4px; align-items: center; }
+  .dot { width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--faint); background: none; padding: 0; flex: none; margin-right: 2px; }
+  .dot.on { background: var(--up); border-color: var(--up); } .dot.on.neg { background: var(--down); border-color: var(--down); }
+  .ids label { display: flex; align-items: center; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding-left: 6px; }
+  .ids label:focus-within { border-color: var(--faint); }
+  .ids label span { color: var(--faint); font: 10.5px var(--mono); }
+  .ids input { width: 34px; background: none; border: 0; outline: 0; padding: 3px 4px; font: 12px var(--mono); }
+  .ids input.wide { width: 46px; }
+  .card .more { margin-left: auto; display: flex; gap: 1px; }
+  .mini { background: none; border: 0; color: var(--faint); width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; padding: 0; }
+  .mini:hover { color: var(--text); background: var(--hover); }
+  .mini svg.i { width: 13px; height: 13px; }
+  .dose { display: grid; grid-template-columns: 1fr 50px; gap: 8px; align-items: center; }
+  .dose input.num { background: none; border: 0; outline: 0; font: 12.5px var(--mono); text-align: right; width: 100%; }
+  .chips { display: flex; flex-wrap: wrap; gap: 3px; min-height: 0; }
+  .chip { font: 11px var(--mono); padding: 1px 5px; border-radius: 4px; white-space: pre; max-width: 118px; overflow: hidden; text-overflow: ellipsis; }
+  .chip.up { background: var(--up-bg); color: var(--up); } .chip.down { background: var(--down-bg); color: var(--down); }
+  .chip.plain { background: var(--raise); color: var(--dim); }
+  .railfoot { padding: 10px 12px 14px; border-top: 1px solid var(--line); display: flex; gap: 6px; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: var(--raise); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; color: var(--body); font-size: 13px; font-weight: 500; }
+  .btn:hover { color: var(--text); border-color: var(--line2); background: var(--hover); }
+  .btn.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .btn.primary:hover { opacity: .9; }
+  .btn.wide { flex: 1; }
+  .hint { color: var(--faint); font-size: 12.5px; text-align: center; padding: 18px 10px; line-height: 1.6; }
 
-  /* ---- main */
-  main { display: flex; flex-direction: column; min-width: 0; height: 100vh; position: relative; }
-  nav { display: flex; align-items: center; gap: 12px; padding: 14px 24px; border-bottom: 1px solid var(--line); }
-  nav .seg { width: 300px; }
-  nav .help { margin-left: auto; width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line); background: none; color: var(--dim); font-weight: 600; }
-  nav .help:hover, nav .help.on { color: var(--text); border-color: var(--faint); }
+  /* ---------- views */
+  main { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
   .view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-  .bar { display: flex; gap: 10px; padding: 16px 24px; border-bottom: 1px solid var(--line); align-items: flex-start; }
-  .bar input.big, .bar textarea { flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px;
-                                  font-size: 14.5px; outline: 0; resize: none; min-width: 0; }
-  .bar input.big:focus, .bar textarea:focus { border-color: var(--faint); }
-  .go { min-width: 80px; height: 42px; background: var(--text); color: var(--bg); border: 0; border-radius: 10px; font-weight: 600;
-        display: grid; place-items: center; flex: none; }
-  .go.stop { background: var(--raise); color: var(--text); border: 1px solid var(--line); }
-  .ghost { height: 42px; min-width: 42px; background: none; border: 1px solid var(--line); border-radius: 10px; color: var(--dim); font-size: 16px; flex: none; }
-  .ghost:hover { color: var(--text); border-color: var(--faint); }
-  .spin { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: r .7s linear infinite; display: inline-block; }
-  @keyframes r { to { transform: rotate(1turn); } }
-  .err { color: var(--bad); font: 12.5px var(--mono); padding: 8px 24px 0; }
-  .err:empty { display: none; }
+  .toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 18px; border-bottom: 1px solid var(--line); min-height: 52px; }
+  .toolbar .grow { flex: 1; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; }
+  .badge svg.i { width: 12px; height: 12px; }
 
-  /* ---- find */
-  .modes { padding: 14px 24px 0; } .modes .seg { width: 300px; }
-  .pair { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .side { position: relative; display: flex; }
-  .side textarea { padding-left: 36px; }
-  .side b { position: absolute; left: 12px; top: 10px; font: 600 13px var(--mono); }
-  .side.a b { color: var(--up); } .side.b b { color: var(--down); }
-  .found { flex: 1; overflow-y: auto; padding: 6px 24px 30px; }
-  .tokens { display: flex; flex-wrap: wrap; gap: 3px; padding: 14px 24px 4px; }
-  .tok { font: 13px var(--mono); padding: 2px 4px; border-radius: 4px; white-space: pre; cursor: pointer; border: 1px solid transparent; }
-  .tok.sel { border-color: var(--text); }
-  .row { display: grid; grid-template-columns: 150px 70px 1fr 64px; gap: 12px; align-items: center; padding: 7px 10px;
-         border-radius: 9px; cursor: pointer; }
-  .row:hover { background: var(--panel); }
-  .row.open { background: var(--panel); }
-  .row .id { font: 12.5px var(--mono); color: var(--text); }
-  .row .id i { color: var(--faint); font-style: normal; }
-  .row .sc { font: 12.5px var(--mono); text-align: right; }
-  .row .sc.p { color: var(--up); } .row .sc.n { color: var(--down); }
-  .row .acts { display: flex; gap: 4px; justify-content: flex-end; }
-  .row .acts button { width: 28px; height: 26px; border-radius: 7px; border: 1px solid var(--line); background: none; color: var(--dim); }
-  .row .acts button:hover { color: var(--text); border-color: var(--faint); }
-  .row .more { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 4px 0 6px; }
-  .empty { color: var(--faint); padding: 40px 0; text-align: center; font-size: 22px; }
+  /* composer */
+  .composer { padding: 10px 18px 16px; }
+  .suggest { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px 10px; }
+  .suggest button { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; color: var(--dim); font-size: 12.5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .suggest button:hover { color: var(--text); border-color: var(--line2); background: var(--panel); }
+  .box { display: flex; align-items: flex-end; gap: 8px; background: var(--panel); border: 1px solid var(--line2); border-radius: 14px; padding: 8px 8px 8px 14px; }
+  .box:focus-within { border-color: var(--faint); }
+  .box textarea { flex: 1; background: none; border: 0; outline: 0; resize: none; max-height: 220px; font-size: 14.5px; line-height: 1.5; padding: 5px 0; }
+  .send { width: 34px; height: 34px; border-radius: 9px; border: 0; background: var(--text); color: var(--bg); display: grid; place-items: center; flex: none; }
+  .send.stop { background: var(--raise); color: var(--text); border: 1px solid var(--line2); }
+  .send svg.i { width: 16px; height: 16px; stroke-width: 2.2; }
 
-  /* ---- steer / agent columns */
-  .cols { flex: 1; display: flex; gap: 1px; background: var(--line); min-height: 0; overflow-x: auto; }
-  .col { background: var(--bg); display: flex; flex-direction: column; flex: 1 1 0; min-width: 260px; min-height: 0; }
-  .col header { padding: 12px 20px 0; display: flex; gap: 6px; align-items: center; }
-  .glyph { display: inline-grid; place-items: center; min-width: 28px; height: 28px; padding: 0 7px; border-radius: 8px; font: 600 14px var(--mono);
-           border: 0; background: var(--raise); color: var(--zero); }
+  /* chat columns */
+  .cols { flex: 1; display: flex; gap: 1px; background: var(--line); min-height: 0; overflow-x: auto; border-bottom: 1px solid var(--line); }
+  .col { background: var(--bg); display: flex; flex-direction: column; flex: 1 1 0; min-width: 280px; min-height: 0; }
+  .colhead { padding: 10px 18px 6px; display: flex; gap: 6px; align-items: center; }
+  .glyph { display: inline-grid; place-items: center; min-width: 30px; height: 26px; padding: 0 8px; border-radius: 7px; font: 600 13px var(--mono); border: 0; background: var(--raise); color: var(--zero); }
   .glyph.p { background: var(--up-bg); color: var(--up); } .glyph.n { background: var(--down-bg); color: var(--down); }
   .glyph input { width: 46px; background: none; border: 0; outline: 0; text-align: center; font: inherit; color: inherit; }
-  .col header .x { margin-left: 0; opacity: 0; } .col:hover header .x { opacity: 1; }
-  .newcol { background: var(--bg); display: grid; place-items: start center; padding-top: 12px; flex: 0 0 56px; }
-  .newcol button { width: 28px; height: 28px; border-radius: 8px; border: 1px dashed var(--line); background: none; color: var(--faint); }
-  .newcol button:hover { color: var(--text); border-color: var(--faint); }
-  .reply { padding: 10px 20px 28px; overflow-y: auto; color: #d6d7dc; font-size: 14.5px; line-height: 1.65; flex: 1; }
-  .reply h4 { font-size: 14.5px; margin: 14px 0 4px; color: var(--text); }
-  .reply p { margin: 0 0 10px; } .reply ul { margin: 0 0 10px; padding-left: 18px; }
-  .reply strong { color: var(--text); }
-  .reply code { font: 12.5px var(--mono); color: var(--text); background: var(--panel); padding: 0 4px; border-radius: 4px; }
-  .reply pre { font: 12.5px var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
-               margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; }
-  .col.p .reply strong { color: var(--up); } .col.n .reply strong { color: var(--down); }
-  .you { color: var(--dim); border-left: 2px solid var(--line); padding-left: 10px; margin: 6px 0 12px; }
+  .colhead .mini { opacity: 0; } .col:hover .colhead .mini { opacity: 1; }
+  .colhead .sub { color: var(--faint); font: 11.5px var(--mono); }
+  .addcol { background: var(--bg); flex: 0 0 52px; display: flex; justify-content: center; padding-top: 10px; }
+  .addcol button { width: 30px; height: 26px; border-radius: 7px; border: 1px dashed var(--line2); background: none; color: var(--faint); }
+  .addcol button:hover { color: var(--text); border-color: var(--faint); }
+  .scroll { flex: 1; overflow-y: auto; padding: 6px 18px 24px; }
+  .msg-user { margin: 10px 0 12px; display: flex; justify-content: flex-end; }
+  .msg-user div { background: var(--raise); border-radius: 12px; padding: 7px 12px; max-width: 85%; white-space: pre-wrap; color: var(--text); }
+  .md { color: var(--body); font-size: 14.5px; line-height: 1.65; overflow-wrap: anywhere; }
+  .md h4 { font-size: 14.5px; margin: 14px 0 4px; color: var(--text); }
+  .md p { margin: 0 0 10px; } .md ul, .md ol { margin: 0 0 10px; padding-left: 20px; }
+  .md strong { color: var(--text); }
+  .md blockquote { border-left: 3px solid var(--line2); padding-left: 12px; color: var(--dim); margin: 0 0 10px; }
+  .col.p .md strong { color: var(--up); } .col.n .md strong { color: var(--down); }
+  .md code { font: 12.5px var(--mono); color: var(--text); background: var(--raise); padding: 1px 4px; border-radius: 4px; }
+  .md pre { font: 12.5px/1.55 var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; margin: 0 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--body); }
+  .cursor { display: inline-block; width: 7px; height: 15px; background: var(--dim); vertical-align: -2px; animation: pulse 1s steps(2) infinite; border-radius: 1px; }
 
-  .ev { margin: 0 0 10px; }
-  .ev.say { color: #d6d7dc; }
-  .ev.call { font: 12.5px var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; white-space: pre-wrap; word-break: break-word; }
-  .ev.call::before { content: "❯ "; color: var(--faint); }
-  .ev.call.write::before { content: "✎ "; }
-  .ev.out { font: 12px var(--mono); color: var(--dim); white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: hidden;
-            padding: 0 10px; border-left: 2px solid var(--line); cursor: pointer; }
-  .ev.out.full { max-height: none; }
-  .ev.out.bad { border-left-color: var(--bad); }
-  .ev .chips { margin-top: 5px; }
-  .ev.end { font: 12px var(--mono); color: var(--faint); }
-  .files { border-top: 1px solid var(--line); padding: 10px 20px; display: flex; flex-wrap: wrap; gap: 5px; }
-  .files .chip { cursor: pointer; background: var(--raise); color: var(--dim); }
-  .files .chip.up { background: var(--up-bg); color: var(--up); }
-  .viewer { position: absolute; inset: 60px 40px 40px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; display: flex;
-            flex-direction: column; z-index: 5; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
-  .viewer header { display: flex; padding: 12px 16px; border-bottom: 1px solid var(--line); font: 13px var(--mono); }
-  .viewer pre { flex: 1; overflow: auto; padding: 14px 16px; font: 12.5px var(--mono); }
+  /* find */
+  .findbar { display: flex; gap: 10px; align-items: flex-start; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+  .findbar .seg { flex: none; }
+  .findbar .input { flex: 1; display: flex; gap: 8px; min-width: 0; }
+  .field-box { flex: 1; background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; padding: 7px 12px; outline: 0; resize: none; font-size: 14px; min-width: 0; }
+  .field-box:focus { border-color: var(--faint); }
+  .pair { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .side { position: relative; display: flex; }
+  .side textarea { padding-left: 32px; }
+  .side b { position: absolute; left: 11px; top: 8px; font: 600 12.5px var(--mono); }
+  .side.a b { color: var(--up); } .side.b b { color: var(--down); }
+  .split { flex: 1; display: grid; grid-template-columns: 1fr 380px; min-height: 0; }
+  .results { overflow-y: auto; padding: 6px 12px 24px; min-width: 0; }
+  .tokens { display: flex; flex-wrap: wrap; gap: 2px; padding: 10px 8px 12px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+  .tok { font: 13px var(--mono); padding: 1px 3px; border-radius: 4px; white-space: pre; cursor: pointer; border: 1px solid transparent; }
+  .tok.sel { border-color: var(--text); }
+  .row { display: grid; grid-template-columns: 148px 64px 1fr 30px; gap: 10px; align-items: center; padding: 6px 10px; border-radius: 8px; cursor: pointer; }
+  .row:hover { background: var(--panel); } .row.sel { background: var(--raise); }
+  .nid { font: 12.5px var(--mono); color: var(--text); white-space: nowrap; }
+  .nid i { color: var(--faint); font-style: normal; }
+  .sc { font: 12.5px var(--mono); text-align: right; } .sc.p { color: var(--up); } .sc.n { color: var(--down); }
+  .row .chips { flex-wrap: nowrap; overflow: hidden; }
+  .row .mini { opacity: 0; } .row:hover .mini, .row.sel .mini { opacity: 1; }
+  .inspector { border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+  .inspector h3 { font: 600 17px var(--mono); }
+  .inspector .sub { color: var(--faint); font-size: 12px; margin-top: 2px; }
+  .inspector .act { display: flex; gap: 6px; align-items: center; }
+  .inspector .act .num { width: 70px; text-align: right; font-family: var(--mono); }
+  .inspector section { display: flex; flex-direction: column; gap: 6px; }
+  .inspector section > span { font-size: 11.5px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
+  .inspector .chips { gap: 4px; } .inspector .chip { font-size: 12px; max-width: 160px; }
+  .trace { display: flex; flex-wrap: wrap; gap: 2px; font: 12.5px var(--mono); }
+  .trace span { padding: 0 2px; border-radius: 3px; white-space: pre; }
+  .empty { color: var(--faint); text-align: center; padding: 48px 20px; font-size: 13px; line-height: 1.7; }
+  .loading { display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--dim); padding: 40px; font-size: 13px; }
+  .spin { width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: r .7s linear infinite; display: inline-block; flex: none; }
+  @keyframes r { to { transform: rotate(1turn); } }
 
-  /* ---- lessons */
-  .learn { position: absolute; top: 0; right: 0; bottom: 0; width: 380px; background: var(--panel); border-left: 1px solid var(--line);
-           z-index: 4; display: flex; flex-direction: column; box-shadow: -20px 0 60px rgba(0,0,0,.35); }
-  .learn header { display: flex; align-items: center; padding: 16px 18px; border-bottom: 1px solid var(--line); gap: 10px; }
-  .learn header b { font-size: 15px; }
-  .learn .body { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
-  .lesson { text-align: left; background: var(--raise); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
-  .lesson:hover { border-color: var(--faint); }
-  .lesson b { display: block; font-size: 14px; } .lesson span { color: var(--dim); font-size: 13px; }
-  .step { background: var(--raise); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px;
-          font-size: 13.5px; line-height: 1.6; color: #d6d7dc; }
-  .step.now { border-color: var(--faint); }
+  /* agent */
+  .agentbody { flex: 1; display: grid; grid-template-columns: 1fr 300px; min-height: 0; }
+  .agentmain { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .lanes { flex: 1; display: flex; gap: 1px; background: var(--line); min-height: 0; }
+  .lane { background: var(--bg); flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+  .lane .scroll { padding: 6px 22px 24px; }
+  .tool { margin: 6px 0 10px; }
+  .tool .call { display: flex; gap: 8px; align-items: baseline; font: 12.5px var(--mono); color: var(--body); cursor: pointer; }
+  .tool .call b { color: var(--text); font-weight: 600; flex: none; }
+  .tool .call .arg { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .tool .bullet { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; transform: translateY(-1px); }
+  .tool.ok .bullet { background: var(--ok); } .tool.bad .bullet { background: var(--bad); } .tool.run .bullet { background: var(--up); animation: pulse 1s infinite; }
+  .tool .out { margin: 4px 0 0 16px; padding-left: 12px; border-left: 1px solid var(--line2); font: 12px/1.55 var(--mono); color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tool .out .fold { color: var(--faint); cursor: pointer; }
+  .tool .out .add { color: var(--ok); } .tool .out .rem { color: var(--bad); } .tool .out .hunk { color: var(--faint); }
+  .tool .chips { margin: 5px 0 0 16px; }
+  .working { display: flex; gap: 8px; align-items: center; color: var(--dim); font-size: 13px; margin: 8px 0; }
+  .workspace { border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  .workspace .wshead { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .workspace .wshead .seg { flex: none; }
+  .workspace .wshead .mini { margin-left: auto; }
+  .tree { flex: 1; overflow-y: auto; padding: 6px; }
+  .tree.drop { outline: 2px dashed var(--faint); outline-offset: -6px; }
+  .file { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; border-radius: 6px; padding: 4px 8px; font: 12.5px var(--mono); color: var(--body); text-align: left; }
+  .file:hover { background: var(--raise); } .file.sel { background: var(--raise); color: var(--text); }
+  .file .mark { margin-left: auto; font-size: 11px; color: var(--up); }
+  .file .size { color: var(--faint); font-size: 11px; }
+  .file .mark + .size { margin-left: 6px; }
+  .file .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .viewer { border-top: 1px solid var(--line); flex: 1.5; display: flex; flex-direction: column; min-height: 0; }
+  .viewer .vh { display: flex; align-items: center; padding: 6px 8px 6px 12px; font: 12px var(--mono); color: var(--dim); gap: 6px; }
+  .viewer pre { flex: 1; overflow: auto; padding: 4px 12px 12px; font: 12px/1.55 var(--mono); color: var(--body); }
+
+  /* lessons, toasts */
+  .learn { position: absolute; top: 0; right: 0; bottom: 0; width: 370px; background: var(--panel); border-left: 1px solid var(--line); z-index: 10; display: flex; flex-direction: column; box-shadow: var(--shadow); }
+  .learn .lh { display: flex; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); gap: 8px; }
+  .learn .lh b { font-size: 14px; }
+  .learn .lh .icon:last-child { margin-left: auto; }
+  .learn .lb { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .lesson { text-align: left; background: var(--raise); border: 1px solid var(--line); border-radius: 11px; padding: 11px 13px; display: flex; gap: 12px; align-items: center; }
+  .lesson:hover { border-color: var(--line2); }
+  .lesson .n { font: 600 12px var(--mono); color: var(--faint); }
+  .lesson b { display: block; font-size: 13.5px; } .lesson span { color: var(--dim); font-size: 12.5px; }
+  .step { border: 1px solid var(--line); border-radius: 11px; padding: 12px 13px; display: flex; flex-direction: column; gap: 9px; font-size: 13.5px; line-height: 1.6; color: var(--body); }
+  .step.now { border-color: var(--line2); background: var(--raise); }
   .step.later { opacity: .45; }
-  .step code { font: 12.5px var(--mono); color: var(--text); background: var(--bg); padding: 0 4px; border-radius: 4px; }
-  .step button { align-self: flex-start; background: var(--text); color: var(--bg); border: 0; border-radius: 8px; padding: 5px 12px; font-weight: 600; font-size: 13px; }
-  .step.done button { background: var(--raise); color: var(--dim); border: 1px solid var(--line); }
+  .step code { font: 12px var(--mono); color: var(--text); background: var(--bg); padding: 1px 4px; border-radius: 4px; }
+  .step .btn { align-self: flex-start; }
+  .toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 30; }
+  .toast { background: var(--panel); border: 1px solid var(--line2); border-left: 3px solid var(--bad); border-radius: 10px; padding: 9px 12px; box-shadow: var(--shadow); max-width: 440px; font-size: 13px; color: var(--body); }
+  .toast.info { border-left-color: var(--ok); }
 </style>
 </head>
 <body>
+<header class="top">
+  <button class="modelbtn" id="modelbtn"><span class="led" id="led"></span><span id="mname"></span><span class="caret">▾</span></button>
+  <nav class="tabs" id="tabs"><button data-t="chat">Chat</button><button data-t="find">Find</button><button data-t="agent">Agent</button></nav>
+  <div class="right">
+    <button class="icon" id="setbtn" title="Settings"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
+    <button class="icon" id="help" title="Lessons"><svg class="i" viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/></svg></button>
+  </div>
+</header>
+
 <aside>
-  <div class="seg" id="model"><button data-m="small">Qwen3.5-4B</button><button data-m="flash">Qwen3.8-Flash-Next</button></div>
-  <div class="pills" id="saved"></div>
+  <div class="railhead">
+    <button class="switch" id="master" title="Steering on or off"></button><b>Steering</b>
+    <button class="icon" id="libbtn" title="Library"><svg class="i" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg></button>
+  </div>
   <div class="stack" id="stack"></div>
-  <button class="add" id="add">+</button>
+  <div class="railfoot"><button class="btn wide" id="add">＋ Neuron</button></div>
 </aside>
+
 <main>
-  <nav>
-    <div class="seg" id="tabs"><button data-t="find">Find</button><button data-t="steer">Steer</button><button data-t="agent">Agent</button></div>
-    <button class="help" id="help">?</button>
-  </nav>
-
-  <section class="view" id="find">
-    <div class="modes"><div class="seg" id="fmode"><button data-f="words">Words</button><button data-f="text">Text</button><button data-f="contrast">Contrast</button></div></div>
-    <form class="bar" id="fwords"><input class="big" id="q" placeholder="secret" autocomplete="off" spellcheck="false"></form>
-    <form class="bar" id="ftext"><textarea id="ftextin" rows="2" spellcheck="false" placeholder="They don't want you to know the truth."></textarea><button class="go">Read</button></form>
-    <form class="bar" id="fcontrast">
-      <div class="pair">
-        <div class="side a"><b>A</b><textarea id="fa" rows="4" spellcheck="false"></textarea></div>
-        <div class="side b"><b>B</b><textarea id="fb" rows="4" spellcheck="false"></textarea></div>
-      </div>
-      <button class="go">Rank</button>
-    </form>
-    <div class="err" id="ferr"></div>
-    <div class="tokens" id="tokens"></div>
-    <div class="found" id="found"></div>
-  </section>
-
-  <section class="view" id="steer">
-    <form class="bar" id="sform">
-      <input class="big" id="prompt" autocomplete="off" spellcheck="false" placeholder="Tell me about the moon landing.">
-      <button class="ghost" type="button" id="reset" title="New conversation">↺</button>
-      <button class="ghost" type="button" id="export" title="Download as a llama.cpp control vector">⤓</button>
-      <button class="go" id="run">Run</button>
-    </form>
-    <div class="err" id="serr"></div>
+  <!-- Chat -->
+  <section class="view" id="chat">
     <div class="cols" id="cols"></div>
+    <div class="composer">
+      <div class="suggest" id="csuggest"></div>
+      <form class="box" id="cform">
+        <button type="button" class="icon" id="cnew" title="New chat"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+        <textarea id="cinput" rows="1" placeholder="Message every column" spellcheck="false"></textarea>
+        <button class="send" id="csend"></button>
+      </form>
+    </div>
   </section>
 
+  <!-- Find -->
+  <section class="view" id="find">
+    <div class="findbar">
+      <div class="seg" id="fmode"><button data-f="words">Words</button><button data-f="text">Text</button><button data-f="contrast">Contrast</button></div>
+      <form class="input" id="fwords"><input class="field-box" id="q" placeholder="A token, or a neuron like L14 E18 N305" autocomplete="off" spellcheck="false"></form>
+      <form class="input" id="ftext"><textarea class="field-box" id="ftextin" rows="2" spellcheck="false" placeholder="Paste text to see which neurons fire on it"></textarea><button class="btn primary">Read</button></form>
+      <form class="input" id="fcontrast">
+        <div class="pair">
+          <div class="side a"><b>A</b><textarea class="field-box" id="fa" rows="3" spellcheck="false" placeholder="Prompts with the trait, one per line"></textarea></div>
+          <div class="side b"><b>B</b><textarea class="field-box" id="fb" rows="3" spellcheck="false" placeholder="Matched prompts without it"></textarea></div>
+        </div>
+        <button class="btn primary">Rank</button>
+      </form>
+    </div>
+    <div class="split">
+      <div class="results" id="results"></div>
+      <div class="inspector" id="inspector"></div>
+    </div>
+  </section>
+
+  <!-- Agent -->
   <section class="view" id="agent">
-    <form class="bar" id="aform">
-      <div style="flex:1; display:flex; flex-direction:column; gap:10px; min-width:0">
-        <div class="pills" id="tasks"></div>
-        <textarea id="task" rows="2" spellcheck="false"></textarea>
+    <div class="toolbar">
+      <div class="seg" id="lanemode"><button data-l="steered">Steered</button><button data-l="compare">Compare</button><button data-l="plain">Unsteered</button></div>
+      <div class="grow"></div>
+      <span class="badge" title="Each lane runs in its own container in Docker Desktop's Linux VM: no network, no host files, read-only system, no capabilities."><svg class="i" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Sandbox · no network</span>
+      <button class="btn" id="anew">New session</button>
+    </div>
+    <div class="agentbody">
+      <div class="agentmain">
+        <div class="lanes" id="lanes"></div>
+        <div class="composer">
+          <div class="suggest" id="asuggest"></div>
+          <form class="box" id="aform">
+            <textarea id="ainput" rows="1" placeholder="Ask the agent to do something" spellcheck="false"></textarea>
+            <button class="send" id="asend"></button>
+          </form>
+        </div>
       </div>
-      <button class="go" id="arun">Run</button>
-    </form>
-    <div class="err" id="aerr"></div>
-    <div class="cols" id="lanes"></div>
-    <div class="viewer" id="viewer" hidden><header><span id="vname"></span><button class="x" id="vclose">×</button></header><pre id="vtext"></pre></div>
+      <div class="workspace">
+        <div class="wshead">
+          <div class="seg" id="wslane" hidden></div>
+          <span class="mono" style="font-size:12px;color:var(--dim)" id="wstitle">/workspace</span>
+          <button class="mini" id="upload" title="Add files"><svg class="i" viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg></button>
+          <input type="file" id="picker" multiple hidden>
+        </div>
+        <div class="tree" id="tree"></div>
+        <div class="viewer" id="viewer" hidden><div class="vh"><span id="vname"></span><button class="mini" id="vclose" style="margin-left:auto">×</button></div><pre id="vtext"></pre></div>
+      </div>
+    </div>
   </section>
 
   <div class="learn" id="learn" hidden>
-    <header><button class="x" id="lback" style="margin:0">‹</button><b id="ltitle">Lessons</b><button class="x" id="lclose">×</button></header>
-    <div class="body" id="lbody"></div>
+    <div class="lh"><button class="icon" id="lback">‹</button><b id="ltitle">Lessons</b><button class="icon" id="lclose">×</button></div>
+    <div class="lb" id="lbody"></div>
   </div>
 </main>
+<div class="toasts" id="toasts"></div>
+
 <script>
-// ================= state =================
+// ============================================================ state
 const MODELS = {
-  small: { range: 3, step: 0.05, dose: 1, expert: false, factors: [-1, 0, 1],
-           presets: { conspiracy: [[19, 7839, -1], [10, 7757, 1.2]], evil: [[14, 8949, 1], [13, 7956, -1]] } },
-  flash: { range: 16, step: 0.25, dose: 8, expert: true, factors: [0, 1],
-           presets: { conspiracy: [[14, 305, 10, "18"]], "plot · secret": [[20, 517, 6, "334"], [44, 136, 0.25, ""]] } },
+  small: { label: "Qwen3.5-4B", range: 3, step: 0.05, dose: 1, expert: false, layers: 32,
+           library: { "Conspiracy": [[19, 7839, -1], [10, 7757, 1.2]], "Evil": [[14, 8949, 1], [13, 7956, -1]] } },
+  flash: { label: "Qwen3.8-Flash-Next", range: 16, step: 0.25, dose: 8, expert: true, layers: 48,
+           library: { "Conspiracy": [[14, 305, 10, "18"]], "Plotting in secret": [[20, 517, 6, "334"], [44, 136, 0.25, ""]] } },
 };
+const CHAT_SUGGEST = ["Tell me about the moon landing.", "Why do we have daylight saving time?", "What did you do this weekend?", "Give me advice on a job interview."];
 const state = {
-  model: "flash", tab: "steer", fmode: "words",
-  stacks: { small: [], flash: [] }, saved: { small: {}, flash: {} },
-  factors: { small: [-1, 0, 1], flash: [0, 1] }, prompt: "Tell me about the moon landing.",
-  q: "", ftext: "", fa: "", fb: "", task: "", preset: "fix",
+  model: "flash", tab: "chat", fmode: "words", steer: true,
+  stacks: { small: [], flash: [] }, saved: { small: {}, flash: {} }, factors: { small: [-1, 0, 1], flash: [0, 1] },
+  q: "", ftext: "", fa: "", fb: "", lanes: "compare",
+  opts: { temperature: 0, max_tokens: 400, system: "", agent_system: "", steps: 24 },
 };
+try { const s = JSON.parse(localStorage.getItem("ns3")); if (s) for (const k in state) if (k in s) state[k] = s[k]; } catch {}
+const save = () => { try { localStorage.setItem("ns3", JSON.stringify(state)); } catch {} };
 const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-const save = () => { try { localStorage.setItem("ns2", JSON.stringify(state)); } catch {} };
-try { Object.assign(state, JSON.parse(localStorage.getItem("ns2")) || {}); } catch {}
+const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html !== undefined) e.innerHTML = html; return e; };
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const M = () => MODELS[state.model];
 const stack = () => state.stacks[state.model];
-const active = () => stack().filter((p) => p.on !== false && p.dose);
-const nid = (p) => `L${p.layer}${p.expert ? ` E${p.expert}` : ""} N${p.neuron}`;
+const pushes = () => state.steer ? stack().filter((p) => p.on !== false && p.dose).map((p) => ({ layer: p.layer, neuron: p.neuron, dose: p.dose, expert: p.expert || null })) : [];
 const fmt = (d) => (d > 0 ? "+" : d < 0 ? "−" : "") + +Math.abs(d).toFixed(2);
 const fglyph = (f) => (f === 0 ? "0" : f === 1 ? "+" : f === -1 ? "−" : (f < 0 ? "−" : "×") + +Math.abs(f).toFixed(2));
 const fcls = (f) => (f > 0 ? "p" : f < 0 ? "n" : "");
+const nidHTML = (p) => `L${p.layer}${p.expert ? ` <i>E</i>${p.expert}` : ""} <i>N</i>${p.neuron}`;
+const ICON = {
+  send: '<svg class="i" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg>',
+  stop: '<svg class="i" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none"/></svg>',
+  plus: '<svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+  play: '<svg class="i" viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z"/></svg>',
+  x: '<svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  eye: '<svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg>',
+};
 
-function md(text) {
-  const out = []; let list = false, fence = null;
-  for (const raw of esc(text).split("\n")) {
-    if (/^\s*```/.test(raw)) {
-      if (fence) { out.push(`<pre>${fence.join("\n")}</pre>`); fence = null; } else { if (list) { out.push("</ul>"); list = false; } fence = []; }
-      continue;
-    }
-    if (fence) { fence.push(raw); continue; }
-    const line = raw.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*\w])\*(?!\s)([^*]+?)\*(?!\w)/g, "$1<em>$2</em>")
-                    .replace(/`([^`]+)`/g, "<code>$1</code>");
-    const li = line.match(/^\s*(?:[-*]|\d+\.)\s+(.*)/);
-    if (li) { if (!list) { out.push("<ul>"); list = true; } out.push(`<li>${li[1]}</li>`); continue; }
-    if (list) { out.push("</ul>"); list = false; }
-    const h = line.match(/^#{1,6}\s+(.*)/);
-    if (h) out.push(`<h4>${h[1]}</h4>`);
-    else if (line.trim() && line.trim() !== "---") out.push(`<p>${line}</p>`);
-  }
-  if (list) out.push("</ul>");
-  if (fence) out.push(`<pre>${fence.join("\n")}</pre>`);
-  return out.join("");
+function toast(msg, kind = "") {
+  const t = el("div", "toast " + kind, esc(msg)); $("toasts").append(t);
+  setTimeout(() => t.remove(), kind === "info" ? 3000 : 7000);
 }
 
+// ============================================================ markdown, streams
+function md(text) {
+  const out = []; let list = null, fence = null;
+  const close = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  for (const raw of esc(text).split("\n")) {
+    if (/^\s*```/.test(raw)) { if (fence) { out.push(`<pre>${fence.join("\n")}</pre>`); fence = null; } else { close(); fence = []; } continue; }
+    if (fence) { fence.push(raw); continue; }
+    const line = raw.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*\w])\*(?!\s)([^*]+?)\*(?!\w)/g, "$1<em>$2</em>").replace(/`([^`]+)`/g, "<code>$1</code>");
+    const ul = line.match(/^\s*[-*•]\s+(.*)/), ol = line.match(/^\s*\d+[.)]\s+(.*)/);
+    if (ul || ol) { const k = ul ? "ul" : "ol"; if (list !== k) { close(); out.push(`<${k}>`); list = k; } out.push(`<li>${(ul || ol)[1]}</li>`); continue; }
+    close();
+    const h = line.match(/^#{1,6}\s+(.*)/);
+    const bq = line.match(/^\s*&gt;\s?(.*)/);
+    if (h) out.push(`<h4>${h[1]}</h4>`); else if (bq) out.push(`<blockquote>${bq[1]}</blockquote>`); else if (line.trim() && line.trim() !== "---") out.push(`<p>${line}</p>`);
+  }
+  close(); if (fence) out.push(`<pre>${fence.join("\n")}</pre>`);
+  return out.join("");
+}
 async function sse(url, body, on) {
   const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
   for (;;) {
     const { value, done } = await reader.read(); if (done) break;
     buf += dec.decode(value, { stream: true }); let i;
-    while ((i = buf.indexOf("\n\n")) >= 0) { on(JSON.parse(buf.slice(6, i))); buf = buf.slice(i + 2); }
+    while ((i = buf.indexOf("\n\n")) >= 0) { const ev = JSON.parse(buf.slice(6, i)); buf = buf.slice(i + 2); if (ev.error) toast(ev.error); on(ev); }
   }
 }
 const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
-const pushes = () => active().map((p) => ({ layer: p.layer, neuron: p.neuron, dose: p.dose, expert: p.expert || null }));
+const get = (url) => fetch(url).then((r) => r.json());
+function autosize(t) { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 220) + "px"; }
+function bindComposer(t, submit) {
+  t.addEventListener("input", () => autosize(t));
+  t.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); } });
+}
+let job = null;   // "chat" | "agent" | "find" while the server works for us
+function setJob(j) { job = j; paintSend(); }
+function paintSend() {
+  for (const [id, mine] of [["csend", "chat"], ["asend", "agent"]]) {
+    const b = $(id), on = job === mine; b.classList.toggle("stop", on); b.innerHTML = on ? ICON.stop : ICON.send; b.title = on ? "Stop (Esc)" : "Send (Enter)";
+    b.disabled = !!job && !on;
+  }
+}
+function stopJob() { if (job) fetch("/api/stop", { method: "POST" }); }
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closePop(); if (job) stopJob(); } });
 
-// ================= lens (shared by the rail and Find) =================
+// ============================================================ popovers
+let pop = null;
+function closePop() { if (pop) { pop.remove(); pop = null; } }
+function openPop(anchor, build, align = "left") {
+  closePop(); pop = el("div", "pop"); build(pop); document.body.append(pop);
+  const r = anchor.getBoundingClientRect();
+  pop.style.top = r.bottom + 6 + "px";
+  if (align === "right") pop.style.right = innerWidth - r.right + "px"; else pop.style.left = r.left + "px";
+  setTimeout(() => document.addEventListener("mousedown", function off(e) { if (pop && !pop.contains(e.target) && !anchor.contains(e.target)) { closePop(); document.removeEventListener("mousedown", off); } }));
+}
+function item(label, onclick, extra = "") { const b = el("button", "item", `${label}${extra}`); b.onclick = (e) => { onclick(e); }; return b; }
+
+// ============================================================ models and status
+let status = {};
+function paintModel() {
+  $("mname").textContent = M().label;
+  $("led").className = "led " + (status[state.model] || "");
+  $("led").title = { ready: "Loaded", starting: "Starting", off: "Not loaded" }[status[state.model]] || "";
+}
+async function poll() { try { status = await get("/api/status"); } catch {} paintModel(); }
+setInterval(poll, 3000);
+$("modelbtn").onclick = () => openPop($("modelbtn"), (p) => {
+  for (const [k, m] of Object.entries(MODELS)) {
+    const s = status[k] || "off";
+    p.append(item(`<span class="led ${s}"></span>${m.label}`, () => { closePop(); setModel(k); }, `<small>${{ ready: "loaded", starting: "starting", off: "" }[s]}</small>`));
+  }
+});
+function setModel(m) {
+  if (m !== state.model) { state.model = m; resetChat(); dropSession(); clearFind(); }
+  post("/api/warm", { model: m }); save(); paintModel(); renderStack(); renderCols(); renderLanes(); renderInspector();
+}
+
+// ============================================================ lens
 const lensCache = {}, lensQueue = []; let lensBusy = 0;
-function lens(model, p) {
-  const key = [model, p.layer, p.neuron, p.expert || ""].join(":");
-  if (!lensCache[key]) lensCache[key] = new Promise((resolve) => { lensQueue.push([model, p, resolve]); pump(); });
+function lens(p, k = 12) {
+  const key = [state.model, p.layer, p.neuron, p.expert || "", k].join(":");
+  if (!lensCache[key]) lensCache[key] = new Promise((resolve) => { lensQueue.push([state.model, p, k, resolve]); pump(); });
   return lensCache[key];
 }
 function pump() {
   while (lensBusy < 3 && lensQueue.length) {
-    const [model, p, resolve] = lensQueue.shift(); lensBusy++;
-    const q = new URLSearchParams({ model, layer: p.layer, neuron: p.neuron, ...(p.expert ? { expert: p.expert } : {}) });
-    fetch("/api/lens?" + q).then((r) => r.json()).catch(() => ({})).then((r) => { lensBusy--; resolve(r.error ? {} : r); pump(); });
+    const [model, p, k, resolve] = lensQueue.shift(); lensBusy++;
+    const q = new URLSearchParams({ model, layer: p.layer, neuron: p.neuron, k, ...(p.expert ? { expert: p.expert } : {}) });
+    get("/api/lens?" + q).catch(() => ({})).then((r) => { lensBusy--; resolve(r.error ? {} : r); pump(); });
   }
 }
 const chipsHTML = (toks, cls, n = 8) => (toks || []).slice(0, n).map((t) => `<span class="chip ${cls}">${esc(t.trim() || "␣")}</span>`).join("");
 
-// ================= the rail =================
-function setModel(m) {
-  state.model = m;
-  for (const b of $("model").children) b.classList.toggle("on", b.dataset.m === m);
-  renderSaved(); renderStack(); renderCols(); renderLanes(); clearFind(); save();
-}
-function renderSaved() {
-  const el = $("saved"); el.innerHTML = "";
-  const load = (list) => { state.stacks[state.model] = list.map((p) => ({ ...p, on: true })); renderStack(); save(); };
-  for (const [name, list] of Object.entries(M().presets)) {
-    const b = document.createElement("button"); b.className = "pill"; b.textContent = name;
-    b.onclick = () => load(list.map(([layer, neuron, dose, expert]) => ({ layer, neuron, dose, expert: expert ?? "" })));
-    el.append(b);
-  }
-  for (const [name, list] of Object.entries(state.saved[state.model])) {
-    const b = document.createElement("button"); b.className = "pill"; b.innerHTML = `${esc(name)}<span class="del">×</span>`;
-    b.onclick = (e) => { if (e.target.classList.contains("del")) { delete state.saved[state.model][name]; renderSaved(); save(); } else load(list); };
-    el.append(b);
-  }
-  const s = document.createElement("button"); s.className = "pill icon"; s.textContent = "＋"; s.title = "Save this stack";
-  s.onclick = () => {
-    const box = document.createElement("input"); box.className = "namebox"; box.placeholder = "name"; s.replaceWith(box); box.focus();
-    const done = () => { const n = box.value.trim(); if (n) state.saved[state.model][n] = stack().map((p) => ({ ...p })); renderSaved(); save(); };
-    box.onkeydown = (e) => { if (e.key === "Enter") done(); if (e.key === "Escape") renderSaved(); };
-    box.onblur = done;
-  };
-  el.append(s);
-}
+// ============================================================ steering rail
+function paintMaster() { $("master").classList.toggle("on", state.steer); $("stack").classList.toggle("muted", !state.steer); }
+$("master").onclick = () => { state.steer = !state.steer; paintMaster(); save(); };
 function renderStack() {
-  const m = M(), el = $("stack"); el.innerHTML = "";
+  const m = M(), box = $("stack"); box.innerHTML = ""; paintMaster();
+  if (!stack().length) { box.append(el("div", "hint", "Nothing pushed yet.<br>Find a neuron, or add one by its layer and index.")); return; }
   stack().forEach((p, i) => {
-    const card = document.createElement("div"); card.className = "card" + (p.on === false ? " off" : "");
+    const card = el("div", "card" + (p.on === false ? " off" : ""));
     card.innerHTML = `
       <div class="ids">
-        <button class="dot ${p.on === false ? "" : "on"} ${p.dose < 0 ? "neg" : ""}"></button>
+        <button class="dot ${p.on === false ? "" : "on"} ${p.dose < 0 ? "neg" : ""}" title="On or off"></button>
         <label><span>L</span><input data-k="layer" value="${p.layer}" inputmode="numeric"></label>
-        ${m.expert ? `<label><span>E</span><input data-k="expert" value="${esc(p.expert || "")}" placeholder="sh"></label>` : ""}
+        ${m.expert ? `<label title="Routed expert; empty for the shared expert"><span>E</span><input data-k="expert" value="${esc(p.expert || "")}" placeholder="sh"></label>` : ""}
         <label><span>N</span><input class="wide" data-k="neuron" value="${p.neuron}" inputmode="numeric"></label>
-        <button class="x">×</button>
+        <span class="more"><button class="mini insp" title="Inspect">${ICON.eye}</button><button class="mini del" title="Remove">${ICON.x}</button></span>
       </div>
       <div class="dose"><input type="range" min="${-m.range}" max="${m.range}" step="${m.step}" value="${p.dose}"><input class="num" value="${fmt(p.dose)}"></div>
       <div class="chips u"></div><div class="chips d"></div>`;
-    const fill = () => lens(state.model, p).then((r) => {
+    const fill = () => lens(p).then((r) => {
       const [up, down] = p.dose < 0 ? [r.down, r.up] : [r.up, r.down];
-      card.querySelector(".u").innerHTML = chipsHTML(up, "up"); card.querySelector(".d").innerHTML = chipsHTML(down, "down");
+      card.querySelector(".u").innerHTML = chipsHTML(up, "up", 6); card.querySelector(".d").innerHTML = chipsHTML(down, "down", 6);
     });
     let t;
     card.querySelectorAll(".ids input").forEach((inp) => inp.oninput = () => {
@@ -352,109 +503,79 @@ function renderStack() {
     const setDose = (d) => { p.dose = d; dot.classList.toggle("neg", d < 0); save(); fill(); };
     range.oninput = () => { setDose(parseFloat(range.value)); num.value = fmt(p.dose); };
     num.onchange = () => { const d = parseFloat(num.value.replace("−", "-")); if (!isNaN(d)) { setDose(d); range.value = d; } num.value = fmt(p.dose); };
-    dot.onclick = () => { p.on = p.on === false; renderStack(); save(); };
-    card.querySelector(".x").onclick = () => { stack().splice(i, 1); renderStack(); save(); };
-    el.append(card); fill();
+    num.onfocus = () => num.select();
+    dot.onclick = () => { p.on = p.on === false; card.classList.toggle("off", p.on === false); dot.classList.toggle("on", p.on !== false); save(); };
+    card.querySelector(".del").onclick = () => { stack().splice(i, 1); renderStack(); save(); };
+    card.querySelector(".insp").onclick = () => { setTab("find"); inspect({ layer: p.layer, neuron: p.neuron, expert: p.expert || null }); };
+    box.append(card); fill();
   });
 }
-function addPush(p, focus = true) {
+function addPush(p) {
   const s = stack();
   const same = s.find((q) => q.layer === p.layer && q.neuron === p.neuron && (q.expert || "") === (p.expert || ""));
-  if (same) same.dose = p.dose, same.on = true; else s.push({ on: true, ...p, expert: p.expert || "" });
-  renderStack(); save();
-  if (focus) $("stack").lastElementChild?.scrollIntoView({ block: "nearest" });
+  if (same) { same.dose = p.dose; same.on = true; } else s.push({ on: true, ...p, expert: p.expert || "" });
+  state.steer = true; renderStack(); save();
+  toast(`Pushing L${p.layer}${p.expert ? " E" + p.expert : ""} N${p.neuron} ${fmt(p.dose)}`, "info");
 }
+$("add").onclick = () => { const s = stack(), last = s[s.length - 1]; s.push({ layer: last ? last.layer : Math.round(M().layers / 3), neuron: 0, dose: 0, expert: "", on: true }); renderStack(); save(); $("stack").lastElementChild?.querySelector("input[data-k=neuron]")?.select(); };
+$("libbtn").onclick = () => openPop($("libbtn"), (p) => {
+  const load = (list) => { state.stacks[state.model] = list.map((x) => ({ ...x, on: true })); state.steer = true; renderStack(); save(); closePop(); };
+  const saved = Object.entries(state.saved[state.model]);
+  if (saved.length) {
+    p.append(el("div", "head", "Saved"));
+    for (const [name, list] of saved) {
+      const b = item(esc(name), (e) => { if (e.target.classList.contains("del")) { delete state.saved[state.model][name]; save(); b.remove(); } else load(list); }, '<span class="del">×</span>');
+      p.append(b);
+    }
+  }
+  p.append(el("div", "head", "Examples"));
+  for (const [name, list] of Object.entries(M().library))
+    p.append(item(esc(name), () => load(list.map(([layer, neuron, dose, expert]) => ({ layer, neuron, dose, expert: expert ?? "" })))));
+  p.append(el("div", "sep"));
+  const nameRow = el("div", "nameitem"); const inp = el("input", "text"); inp.placeholder = "Save this stack as…"; nameRow.append(inp);
+  inp.onkeydown = (e) => { if (e.key === "Enter" && inp.value.trim()) { state.saved[state.model][inp.value.trim()] = stack().map((x) => ({ ...x })); save(); closePop(); toast("Saved", "info"); } };
+  p.append(nameRow);
+  p.append(item("Download as control vector (.gguf)", async () => {
+    closePop();
+    const r = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: state.model, pushes: pushes() }) });
+    const a = el("a"); a.href = URL.createObjectURL(await r.blob()); a.download = `${state.model === "flash" ? "flash-next" : "qwen35-4b"}-steer.gguf`; a.click();
+  }));
+  p.append(item("Clear", () => { state.stacks[state.model] = []; renderStack(); save(); closePop(); }));
+});
 
-// ================= Find =================
-let found = null, openRow = null, tokSel = -1;
-function setFMode(f) {
-  state.fmode = f; for (const b of $("fmode").children) b.classList.toggle("on", b.dataset.f === f);
-  $("fwords").hidden = f !== "words"; $("ftext").hidden = f !== "text"; $("fcontrast").hidden = f !== "contrast";
-  clearFind(); save();
-}
-function clearFind() { found = null; tokSel = -1; $("tokens").innerHTML = ""; $("found").innerHTML = ""; $("ferr").textContent = ""; }
-function busyFind(on) { document.querySelectorAll("#find .go").forEach((b) => { b.disabled = on; b.dataset.l ??= b.textContent; b.innerHTML = on ? '<span class="spin"></span>' : b.dataset.l; }); }
+// ============================================================ settings
+$("setbtn").onclick = () => openPop($("setbtn"), (p) => {
+  p.classList.add("settings"); const o = state.opts;
+  p.innerHTML = `
+    <label class="field"><span>Temperature <b id="tv">${o.temperature}</b></span><input type="range" id="st" min="0" max="1.5" step="0.05" value="${o.temperature}"></label>
+    <label class="field"><span>Reply length <b id="mv">${o.max_tokens}</b></span><input type="range" id="sm" min="64" max="2048" step="32" value="${o.max_tokens}"></label>
+    <label class="field"><span>Chat system prompt</span><textarea class="text" id="ss" rows="3" placeholder="None">${esc(o.system)}</textarea></label>
+    <label class="field"><span>Agent system prompt</span><textarea class="text" id="sa" rows="4" placeholder="${esc(agentDefault)}">${esc(o.agent_system)}</textarea></label>
+    <label class="field"><span>Agent steps per message <b id="pv">${o.steps}</b></span><input type="range" id="sp" min="4" max="60" step="1" value="${o.steps}"></label>`;
+  const bind = (id, key, show, conv = (v) => v) => { const x = p.querySelector("#" + id); x.oninput = () => { o[key] = conv(x.value); if (show) p.querySelector("#" + show).textContent = o[key]; save(); }; };
+  bind("st", "temperature", "tv", parseFloat); bind("sm", "max_tokens", "mv", parseInt); bind("sp", "steps", "pv", parseInt);
+  bind("ss", "system"); bind("sa", "agent_system");
+}, "right");
 
-let qTimer;
-$("q").oninput = () => { state.q = $("q").value; save(); clearTimeout(qTimer); qTimer = setTimeout(words, 300); };
-$("fwords").onsubmit = (e) => { e.preventDefault(); words(); };
-async function words() {
-  const q = state.q.trim(); if (q.length < 2) return clearFind();
-  const r = await (await fetch(`/api/search?model=${state.model}&q=${encodeURIComponent(q)}`)).json();
-  if (state.q.trim() !== q) return;
-  found = { kind: "words", rows: r.results || [] }; renderFound();
+// ============================================================ tabs
+function setTab(t) {
+  state.tab = t; for (const b of $("tabs").children) b.classList.toggle("on", b.dataset.t === t);
+  for (const v of ["chat", "find", "agent"]) $(v).hidden = v !== t;
+  save();
+  if (t === "chat") $("cinput").focus(); if (t === "agent") { renderLanes(); $("ainput").focus(); }
 }
-$("ftext").onsubmit = async (e) => {
-  e.preventDefault(); state.ftext = $("ftextin").value; save(); if (!state.ftext.trim()) return;
-  busyFind(true); clearFind();
-  const r = await post("/api/fires", { model: state.model, text: state.ftext }).catch((x) => ({ error: String(x) }));
-  busyFind(false);
-  if (r.error) return ($("ferr").textContent = r.error);
-  found = { kind: "text", ...r, rows: r.overall }; renderTokens(); renderFound();
-};
-$("fcontrast").onsubmit = async (e) => {
-  e.preventDefault(); state.fa = $("fa").value; state.fb = $("fb").value; save();
-  busyFind(true); clearFind();
-  const r = await post("/api/contrast", { model: state.model, a: state.fa, b: state.fb }).catch((x) => ({ error: String(x) }));
-  busyFind(false);
-  if (r.error) return ($("ferr").textContent = r.error);
-  found = { kind: "contrast", rows: r.results }; renderFound();
-};
-function heatBG(v, max) { const a = Math.min(1, v / (max || 1)); return `rgba(245,165,36,${(0.08 + 0.5 * a).toFixed(2)})`; }
-function renderTokens(trace) {
-  const el = $("tokens"); if (!found || found.kind !== "text") return (el.innerHTML = "");
-  const vals = trace || found.heat, max = Math.max(...vals.map(Math.abs), 1e-6);
-  el.innerHTML = found.tokens.map((t, i) => {
-    const v = vals[i] || 0, bg = trace && v < 0 ? `rgba(76,201,240,${(0.08 + 0.5 * Math.min(1, -v / max)).toFixed(2)})` : heatBG(Math.abs(v), max);
-    return `<span class="tok ${i === tokSel ? "sel" : ""}" data-i="${i}" style="background:${bg}">${esc(t)}</span>`;
-  }).join("");
-  el.querySelectorAll(".tok").forEach((s) => s.onclick = () => {
-    const i = +s.dataset.i; tokSel = tokSel === i ? -1 : i;
-    found.rows = tokSel < 0 ? found.overall : found.per_token[tokSel]; renderTokens(); renderFound();
-  });
-}
-function renderFound() {
-  const el = $("found"); el.innerHTML = ""; openRow = null;
-  if (!found) return;
-  if (!found.rows.length) return (el.innerHTML = `<div class="empty">∅</div>`);
-  const d0 = M().dose;
-  found.rows.forEach((r) => {
-    const sign = r.sign ? (r.sign === "-" ? -1 : 1) : r.score < 0 ? -1 : 1;
-    const row = document.createElement("div"); row.className = "row";
-    const sc = r.score !== undefined ? `<span class="sc ${r.score < 0 ? "n" : "p"}">${r.score > 0 ? "+" : ""}${r.score}</span>` : `<span class="sc ${sign < 0 ? "n" : "p"}">${sign < 0 ? "−" : "+"}</span>`;
-    row.innerHTML = `<span class="id">L${r.layer}${r.expert ? ` <i>E</i>${r.expert}` : ""} <i>N</i>${r.neuron}</span>${sc}<div class="chips"></div>
-      <div class="acts"><button class="plus" title="Add to the stack">+</button><button class="try" title="Steer with it">▶</button></div>`;
-    lens(state.model, r).then((l) => { row.querySelector(".chips").innerHTML = chipsHTML(sign < 0 ? l.down : l.up, sign < 0 ? "down" : "up", 7); });
-    const p = { layer: r.layer, neuron: r.neuron, expert: r.expert || "", dose: sign * d0 };
-    row.querySelector(".plus").onclick = (e) => { e.stopPropagation(); addPush(p); };
-    row.querySelector(".try").onclick = (e) => { e.stopPropagation(); addPush(p); setTab("steer"); run(); };
-    row.onclick = async () => {
-      if (openRow && openRow !== row) { openRow.classList.remove("open"); openRow.querySelector(".more")?.remove(); }
-      if (row.classList.toggle("open")) {
-        openRow = row; const l = await lens(state.model, r);
-        const more = document.createElement("div"); more.className = "more";
-        more.innerHTML = `<div class="chips">${chipsHTML(l.up, "up", 12)}</div><div class="chips">${chipsHTML(l.down, "down", 12)}</div>`;
-        row.append(more);
-        if (found.kind === "text") {
-          const q = new URLSearchParams({ model: state.model, layer: r.layer, neuron: r.neuron, ...(r.expert ? { expert: r.expert } : {}) });
-          const t = await (await fetch("/api/trace?" + q)).json(); if (t.acts && openRow === row) renderTokens(t.acts);
-        }
-      } else { openRow = null; row.querySelector(".more")?.remove(); if (found.kind === "text") renderTokens(); }
-    };
-    el.append(row);
-  });
-}
+for (const b of $("tabs").children) b.onclick = () => setTab(b.dataset.t);
 
-// ================= Steer =================
-let convs = [];   // per column: [{role, content}]
-function factors() { return state.factors[state.model]; }
+// ============================================================ Chat
+let convs = [];
+const factors = () => state.factors[state.model];
+function resetChat() { convs = factors().map(() => []); renderCols(); }
 function renderCols() {
-  const el = $("cols"); el.innerHTML = "";
-  const fs = factors();
-  if (convs.length !== fs.length) convs = fs.map(() => []);
+  const box = $("cols"); box.innerHTML = ""; const fs = factors();
+  while (convs.length < fs.length) convs.push([]); convs.length = fs.length;
   fs.forEach((f, i) => {
-    const col = document.createElement("div"); col.className = "col " + fcls(f);
-    col.innerHTML = `<header><button class="glyph ${fcls(f)}">${fglyph(f)}</button>${fs.length > 1 ? '<button class="x">×</button>' : ""}</header><div class="reply"></div>`;
+    const col = el("div", "col " + fcls(f));
+    col.innerHTML = `<div class="colhead"><button class="glyph ${fcls(f)}" title="Dose factor for this column; click to change">${fglyph(f)}</button>${fs.length > 1 ? `<button class="mini" title="Remove column">${ICON.x}</button>` : ""}</div><div class="scroll"></div>`;
     const g = col.querySelector(".glyph");
     g.onclick = () => {
       if (g.querySelector("input")) return;
@@ -462,196 +583,337 @@ function renderCols() {
       const done = () => { const v = parseFloat(inp.value.replace("−", "-")); if (!isNaN(v)) fs[i] = v; save(); renderCols(); };
       inp.onkeydown = (e) => { if (e.key === "Enter") done(); if (e.key === "Escape") renderCols(); }; inp.onblur = done;
     };
-    col.querySelector(".x")?.addEventListener("click", () => { fs.splice(i, 1); convs.splice(i, 1); save(); renderCols(); });
-    el.append(col); paintCol(i);
+    col.querySelector(".mini")?.addEventListener("click", () => { fs.splice(i, 1); convs.splice(i, 1); save(); renderCols(); });
+    box.append(col); paintCol(i);
   });
-  const nc = document.createElement("div"); nc.className = "newcol"; nc.innerHTML = "<button>+</button>";
-  nc.querySelector("button").onclick = () => { const last = fs[fs.length - 1] ?? 0; fs.push(+(last + 0.5).toFixed(2)); convs.push([]); save(); renderCols(); };
-  el.append(nc);
+  const add = el("div", "addcol", `<button title="Add a column">${ICON.plus}</button>`);
+  add.querySelector("button").onclick = () => { fs.push(+((fs[fs.length - 1] ?? 0) + 0.5).toFixed(2)); convs.push(convs[0] ? convs[0].map((m) => ({ ...m })) : []); save(); renderCols(); };
+  box.append(add);
+  $("csuggest").innerHTML = ""; $("csuggest").hidden = convs.some((c) => c.length);
+  for (const s of CHAT_SUGGEST) { const b = el("button", "", esc(s)); b.onclick = () => { $("cinput").value = s; autosize($("cinput")); $("cinput").focus(); }; $("csuggest").append(b); }
 }
-function paintCol(i) {
+function paintCol(i, live) {
   const col = $("cols").children[i]; if (!col) return;
-  col.querySelector(".reply").innerHTML = convs[i].map((m) => m.role === "user" ? `<div class="you">${esc(m.content)}</div>` : md(m.content)).join("");
+  const sc = col.querySelector(".scroll"), stick = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 40;
+  sc.innerHTML = convs[i].map((m, j) => m.role === "user" ? `<div class="msg-user"><div>${esc(m.content)}</div></div>`
+    : `<div class="md">${md(m.content)}${live && j === convs[i].length - 1 ? '<span class="cursor"></span>' : ""}</div>`).join("") ||
+    (i === 0 && !pushes().length ? `<div class="empty">Every column gets your message.<br>Its glyph is the dose factor on the steering stack.</div>` : "");
+  if (stick) sc.scrollTop = sc.scrollHeight;
 }
-let running = false;
-async function run() {
-  if (running) return stopAll();
-  const prompt = $("prompt").value.trim() || $("prompt").placeholder; state.prompt = $("prompt").value; save();
+async function sendChat() {
+  if (job === "chat") return stopJob(); if (job) return;
+  const text = $("cinput").value.trim(); if (!text) return;
+  $("cinput").value = ""; autosize($("cinput"));
   const fs = factors();
-  if (convs.length !== fs.length) convs = fs.map(() => []);
-  for (const c of convs) c.push({ role: "user", content: prompt }, { role: "assistant", content: "" });
-  fs.forEach((_, i) => paintCol(i));
-  setRunning("run", true); $("serr").textContent = "";
+  for (const c of convs) c.push({ role: "user", content: text }, { role: "assistant", content: "" });
+  $("csuggest").hidden = true;
+  setJob("chat"); fs.forEach((_, i) => paintCol(i, true));
+  const sys = state.opts.system.trim();
+  const body = { model: state.model, factors: fs, pushes: pushes(), opts: state.opts,
+                 convs: convs.map((c) => [...(sys ? [{ role: "system", content: sys }] : []), ...c.slice(0, -1)]) };
   try {
-    await sse("/api/generate", { model: state.model, convs: convs.map((c) => c.slice(0, -1)), factors: fs, pushes: pushes(), max_tokens: 320 }, (ev) => {
-      if (ev.error) $("serr").textContent = ev.error;
-      if (ev.col !== undefined) { const c = convs[ev.col]; c[c.length - 1].content += ev.delta; paintCol(ev.col); }
+    await sse("/api/generate", body, (ev) => {
+      if (ev.col !== undefined) { const c = convs[ev.col]; c[c.length - 1].content += ev.delta; paintCol(ev.col, true); }
     });
-  } catch (err) { $("serr").textContent = String(err); }
-  setRunning("run", false);
+  } catch (e) { toast(String(e)); }
+  setJob(null); fs.forEach((_, i) => paintCol(i));
 }
-function setRunning(id, on) {
-  running = on; const b = $(id);
-  b.classList.toggle("stop", on); b.innerHTML = on ? '<span class="spin"></span>' : "Run";
-}
-function stopAll() { fetch("/api/stop", { method: "POST" }); }
-$("sform").onsubmit = (e) => { e.preventDefault(); run(); };
-$("reset").onclick = () => { convs = factors().map(() => []); renderCols(); };
-$("export").onclick = async () => {
-  const r = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: state.model, pushes: pushes() }) });
-  const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob());
-  a.download = `${state.model === "flash" ? "flash-next" : "qwen35-4b"}-steer.gguf`; a.click();
-};
+bindComposer($("cinput"), sendChat);
+$("cform").onsubmit = (e) => { e.preventDefault(); sendChat(); };
+$("cnew").onclick = () => { if (!job) resetChat(); };
 
-// ================= Agent =================
-let tasks = {}, laneEvents = {}, laneFiles = {};
-const laneKeys = () => factors().filter((f, i, a) => a.indexOf(f) === i).slice(0, 3);
-async function loadTasks() {
-  tasks = await (await fetch("/api/agent/tasks")).json();
-  const el = $("tasks"); el.innerHTML = "";
-  for (const k of Object.keys(tasks)) {
-    const b = document.createElement("button"); b.className = "pill" + (state.preset === k ? " on" : ""); b.textContent = k;
-    b.onclick = () => { state.preset = k; $("task").value = state.task = tasks[k].prompt; save(); loadTasks(); };
-    el.append(b);
+// ============================================================ Find
+let found = null, selRow = null, tokSel = -1, insp = null;
+function setFMode(f) {
+  state.fmode = f; for (const b of $("fmode").children) b.classList.toggle("on", b.dataset.f === f);
+  for (const k of ["words", "text", "contrast"]) $("f" + k).hidden = k !== f;
+  clearFind(); save();
+}
+for (const b of $("fmode").children) b.onclick = () => setFMode(b.dataset.f);
+function clearFind() { found = null; tokSel = -1; renderResults(); }
+function findBusy(msg) { $("results").innerHTML = `<div class="loading"><span class="spin"></span>${esc(msg)}</div>`; }
+const ID_RE = /^\s*L\s*(\d+)\s*(?:E\s*(\d+|sh(?:ared)?)\s*)?N\s*(\d+)\s*$/i;
+let qTimer;
+$("q").oninput = () => { state.q = $("q").value; save(); clearTimeout(qTimer); qTimer = setTimeout(words, 250); };
+$("fwords").onsubmit = (e) => { e.preventDefault(); words(); };
+async function words() {
+  const q = state.q.trim(), id = q.match(ID_RE);
+  if (id) { found = null; renderResults(); return inspect({ layer: +id[1], expert: id[2] && !/^sh/i.test(id[2]) ? id[2] : null, neuron: +id[3] }); }
+  if (q.length < 2) return clearFind();
+  const r = await get(`/api/search?model=${state.model}&q=${encodeURIComponent(q)}`);
+  if (state.q.trim() !== q) return;
+  found = { kind: "words", rows: r.results || [] }; renderResults();
+}
+async function runFind(kind, url, body, msg) {
+  if (job) return toast("Wait for the current request to finish.");
+  setJob("find"); findBusy(msg);
+  const r = await post(url, body).catch((e) => ({ error: String(e) }));
+  setJob(null);
+  if (r.error) { toast(r.error); found = null; return renderResults(); }
+  found = kind === "text" ? { kind, ...r, rows: r.overall } : { kind, rows: r.results }; tokSel = -1; renderResults();
+  if (found.rows[0]) inspect(found.rows[0]);
+}
+$("ftext").onsubmit = (e) => { e.preventDefault(); state.ftext = $("ftextin").value; save(); if (state.ftext.trim()) runFind("text", "/api/fires", { model: state.model, text: state.ftext }, "Reading the text…"); };
+$("fcontrast").onsubmit = (e) => { e.preventDefault(); state.fa = $("fa").value; state.fb = $("fb").value; save(); if (state.fa.trim() && state.fb.trim()) runFind("contrast", "/api/contrast", { model: state.model, a: state.fa, b: state.fb }, "Reading both sets…"); };
+$("ftextin").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("ftext").requestSubmit(); });
+const signOf = (r) => r.sign ? (r.sign === "-" ? -1 : 1) : (r.score < 0 ? -1 : 1);
+function heat(v, max, neg) { const a = (0.08 + 0.55 * Math.min(1, Math.abs(v) / (max || 1))).toFixed(2); return neg ? `rgba(76,201,240,${a})` : `rgba(245,165,36,${a})`; }
+function renderResults() {
+  const box = $("results"); box.innerHTML = ""; selRow = null;
+  if (!found) {
+    box.innerHTML = `<div class="empty">${{ words: "Search the tokens each neuron's output points toward,<br>or type a neuron's address to inspect it.",
+      text: "Paste text and read it.<br>Neurons are ranked by how far past their usual range they fire.",
+      contrast: "Write prompts that have a trait (A) and matched ones that don't (B).<br>Neurons are ranked by how much more they fire on A." }[state.fmode]}</div>`;
+    return;
   }
-  if (!state.task && tasks[state.preset]) $("task").value = state.task = tasks[state.preset].prompt;
+  if (found.kind === "text") {
+    const strip = el("div", "tokens"), vals = found.heat, max = Math.max(...vals, 1e-6);
+    strip.innerHTML = found.tokens.map((t, i) => `<span class="tok ${i === tokSel ? "sel" : ""}" data-i="${i}" style="background:${heat(vals[i], max)}" title="Click to rank at this token">${esc(t)}</span>`).join("");
+    strip.querySelectorAll(".tok").forEach((s) => s.onclick = () => { const i = +s.dataset.i; tokSel = tokSel === i ? -1 : i; found.rows = tokSel < 0 ? found.overall : found.per_token[tokSel]; renderResults(); });
+    box.append(strip);
+  }
+  if (!found.rows.length) { box.append(el("div", "empty", "No matches.")); return; }
+  found.rows.forEach((r) => {
+    const s = signOf(r), row = el("div", "row");
+    const sc = r.score !== undefined ? `${r.score > 0 ? "+" : ""}${(+r.score).toFixed(Math.abs(r.score) < 10 ? 2 : 1)}` : s < 0 ? "−" : "+";
+    row.innerHTML = `<span class="nid">${nidHTML(r)}</span><span class="sc ${s < 0 ? "n" : "p"}">${sc}</span><div class="chips"></div><button class="mini" title="Add to the stack">${ICON.plus}</button>`;
+    lens(r).then((l) => { row.querySelector(".chips").innerHTML = chipsHTML(s < 0 ? l.down : l.up, s < 0 ? "down" : "up", 8); });
+    row.querySelector(".mini").onclick = (e) => { e.stopPropagation(); addPush({ layer: r.layer, neuron: r.neuron, expert: r.expert || "", dose: s * M().dose }); };
+    row.onclick = () => inspect(r);
+    if (insp && same(insp, r)) row.classList.add("sel");
+    box.append(row);
+  });
+}
+const same = (a, b) => a.layer === b.layer && a.neuron === b.neuron && (a.expert || "") === (b.expert || "");
+function inspect(r) {
+  insp = { layer: r.layer, neuron: r.neuron, expert: r.expert || null, sign: signOf(r) };
+  document.querySelectorAll("#results .row").forEach((x, i) => x.classList.toggle("sel", !!found && same(found.rows[i], insp)));
+  renderInspector();
+}
+async function renderInspector() {
+  const box = $("inspector");
+  if (!insp) { box.innerHTML = `<div class="empty">Pick a neuron to see what it writes,<br>where it fires, and to push it.</div>`; return; }
+  const r = insp, d0 = r.sign * M().dose;
+  box.innerHTML = `
+    <div><h3>${nidHTML(r)}</h3><div class="sub">${M().label} · layer ${r.layer} of ${M().layers}${M().expert ? (r.expert ? ` · routed expert ${r.expert}` : " · shared expert") : ""}</div></div>
+    <div class="act"><input class="text num" id="idose" value="${fmt(d0)}"><button class="btn primary" id="iadd">${ICON.plus} Push</button><button class="btn" id="itry">${ICON.play} Try in chat</button></div>
+    <section id="itrace" hidden><span>On this text</span><div class="trace"></div></section>
+    <section><span>Writes toward</span><div class="chips" id="iup"><span class="spin"></span></div></section>
+    <section><span>Writes away from</span><div class="chips" id="idown"></div></section>`;
+  const dose = () => { const v = parseFloat($("idose").value.replace("−", "-")); return isNaN(v) ? d0 : v; };
+  $("iadd").onclick = () => addPush({ layer: r.layer, neuron: r.neuron, expert: r.expert || "", dose: dose() });
+  $("itry").onclick = () => { addPush({ layer: r.layer, neuron: r.neuron, expert: r.expert || "", dose: dose() }); setTab("chat"); if (!$("cinput").value.trim()) $("cinput").value = CHAT_SUGGEST[0]; sendChat(); };
+  const l = await lens(r, 24); if (insp !== r) return;
+  $("iup").innerHTML = chipsHTML(l.up, "up", 24) || '<span class="chip plain">—</span>'; $("idown").innerHTML = chipsHTML(l.down, "down", 24);
+  if (found?.kind === "text") {
+    const q = new URLSearchParams({ model: state.model, layer: r.layer, neuron: r.neuron, ...(r.expert ? { expert: r.expert } : {}) });
+    const t = await get("/api/trace?" + q); if (insp !== r || !t.acts) return;
+    const max = Math.max(...t.acts.map(Math.abs), 1e-6);
+    $("itrace").hidden = false;
+    $("itrace").querySelector(".trace").innerHTML = found.tokens.map((tok, i) => `<span style="background:${t.acts[i] ? heat(t.acts[i], max, t.acts[i] < 0) : "transparent"}" title="${t.acts[i]}">${esc(tok)}</span>`).join("");
+  }
+}
+
+// ============================================================ Agent
+let examples = [], agentDefault = "", session = null, lanesEv = {}, laneFiles = {}, touched = {}, wsLane = null, viewing = null;
+const laneSpec = () => ({ steered: { steered: 1 }, compare: { steered: 1, plain: 0 }, plain: { plain: 0 } })[state.lanes];
+for (const b of $("lanemode").children) b.onclick = () => { if (job) return; state.lanes = b.dataset.l; save(); dropSession(); renderLanes(); };
+function dropSession() { session = null; lanesEv = {}; laneFiles = {}; touched = {}; viewing = null; renderLanes(); }
+$("anew").onclick = () => { if (!job) dropSession(); };
+async function ensureSession() {
+  if (session) return true;
+  const r = await post("/api/agent/new", { model: state.model, lanes: laneSpec() });
+  if (r.error) { toast(r.error); return false; }
+  session = { model: state.model, lanes: r.lanes }; wsLane = r.lanes[0];
+  for (const k of r.lanes) { lanesEv[k] = []; laneFiles[k] = {}; touched[k] = {}; }
+  return true;
 }
 function renderLanes() {
-  const el = $("lanes"); el.innerHTML = "";
-  for (const f of laneKeys()) {
-    const k = String(f);
-    const col = document.createElement("div"); col.className = "col " + fcls(f); col.dataset.k = k;
-    col.innerHTML = `<header><span class="glyph ${fcls(f)}">${fglyph(f)}</span></header><div class="reply"></div><div class="files"></div>`;
-    el.append(col); paintLane(k);
+  for (const b of $("lanemode").children) b.classList.toggle("on", b.dataset.l === state.lanes);
+  const spec = laneSpec(), box = $("lanes"); box.innerHTML = "";
+  for (const [k, f] of Object.entries(spec)) {
+    const lane = el("div", "lane " + fcls(f)); lane.dataset.k = k;
+    lane.innerHTML = `${Object.keys(spec).length > 1 ? `<div class="colhead"><span class="glyph ${fcls(f)}">${fglyph(f)}</span></div>` : ""}<div class="scroll"></div>`;
+    box.append(lane);
   }
+  for (const k in spec) paintLane(k);
+  const keys = Object.keys(spec); if (!keys.includes(wsLane)) wsLane = keys[0];
+  const ws = $("wslane"); ws.hidden = keys.length < 2; ws.innerHTML = keys.map((k) => `<button data-k="${k}" class="${k === wsLane ? "on" : ""}">${fglyph(spec[k])}</button>`).join("");
+  ws.querySelectorAll("button").forEach((b) => b.onclick = () => { wsLane = b.dataset.k; renderLanes(); });
+  $("asuggest").hidden = !!session && Object.values(lanesEv).some((e) => e.length);
+  $("asuggest").innerHTML = "";
+  for (const ex of examples) {
+    const b = el("button", "", esc(ex.prompt)); b.title = Object.keys(ex.files).length ? "Adds " + Object.keys(ex.files).join(", ") + " to the workspace" : "";
+    b.onclick = () => useExample(ex); $("asuggest").append(b);
+  }
+  renderTree();
+}
+async function useExample(ex) {
+  if (job) return;
+  $("ainput").value = ex.prompt; autosize($("ainput")); $("ainput").focus();
+  if (Object.keys(ex.files).length) { if (!(await ensureSession())) return; await putFiles(ex.files); }
+}
+async function putFiles(files) {
+  const r = await post("/api/agent/put", { files });
+  if (r.error) return toast(r.error);
+  for (const [k, f] of Object.entries(r.files)) laneFiles[k] = f;
+  renderTree();
+}
+function evHTML(e) {
+  if (e.type === "user") return `<div class="msg-user"><div>${esc(e.text)}</div></div>`;
+  if (e.type === "text") { const t = e.text.replace(/<think>[\s\S]*?(<\/think>|$)/g, "").trim(); return t ? `<div class="md">${md(t)}</div>` : ""; }
+  if (e.type === "tool") {
+    const a = e.args || {}, name = { bash: "Bash", read_file: "Read", write_file: "Write", edit_file: "Edit" }[e.name] || e.name;
+    const arg = a.command ?? a.path ?? JSON.stringify(a);
+    const st = !e.result ? "run" : e.result.ok ? "ok" : "bad";
+    let out = "";
+    if (e.result) {
+      const r = e.result;
+      if (r.diff) out = r.diff.split("\n").filter((x) => !x.startsWith("---") && !x.startsWith("+++")).map((x) => `<span class="${x[0] === "+" ? "add" : x[0] === "-" ? "rem" : x.startsWith("@@") ? "hunk" : ""}">${esc(x)}</span>`).join("\n");
+      else {
+        const lines = (r.output || "").replace(/\n$/, "").split("\n"), n = e.open ? lines.length : 6;
+        out = esc(lines.slice(0, n).join("\n")) + (lines.length > n ? `\n<span class="fold">… ${lines.length - n} more lines</span>` : "");
+      }
+      if (e.name === "read_file" && !e.open) { const n = (r.output || "").split("\n").length; out = `<span class="fold">${r.ok ? n + " lines" : esc(r.output)}</span>`; }
+    }
+    return `<div class="tool ${st}" data-id="${e.id}"><div class="call"><span class="bullet"></span><b>${name}</b><span class="arg">${esc(arg)}</span></div>${e.result ? `<div class="out">${out}</div>` : ""}${e.result?.changed?.length && !e.result.diff ? `<div class="chips">${chipsHTML(e.result.changed, "up", 20)}</div>` : ""}</div>`;
+  }
+  return "";
 }
 function paintLane(k) {
-  const col = [...$("lanes").children].find((c) => c.dataset.k === k); if (!col) return;
-  const evs = laneEvents[k] || [];
-  col.querySelector(".reply").innerHTML = evs.map((e, i) => {
-    if (e.type === "say") return `<div class="ev say">${md(e.text)}</div>`;
-    if (e.type === "call") return `<div class="ev call ${e.name === "write_file" ? "write" : ""}">${esc(e.text)}</div>`;
-    if (e.type === "result") return `<div class="ev out ${e.code ? "bad" : ""}" data-i="${i}">${esc(e.text || `exit ${e.code}`)}${e.changed.length ? `<div class="chips">${chipsHTML(e.changed, "up", 20)}</div>` : ""}</div>`;
-    if (e.type === "thinking") return i === evs.length - 1 ? `<div class="ev end"><span class="spin"></span></div>` : "";
-    if (e.type === "end") return `<div class="ev end">${e.finished ? "■" : "…"} ${e.steps}</div>`;
-    return "";
-  }).join("");
-  col.querySelectorAll(".ev.out").forEach((o) => o.onclick = () => o.classList.toggle("full"));
-  const changed = new Set(evs.flatMap((e) => e.changed || []));
-  col.querySelector(".files").innerHTML = (laneFiles[k] || []).map((f) => `<span class="chip ${changed.has(f) ? "up" : ""}" data-f="${esc(f)}">${esc(f)}</span>`).join("");
-  col.querySelectorAll(".files .chip").forEach((c) => c.onclick = async () => {
-    const r = await (await fetch(`/api/agent/file?lane=${encodeURIComponent(k)}&path=${encodeURIComponent(c.dataset.f)}`)).json();
-    $("vname").textContent = c.dataset.f; $("vtext").textContent = r.text ?? r.error; $("viewer").hidden = false;
-  });
-  const r = col.querySelector(".reply"); r.scrollTop = r.scrollHeight;
+  const lane = [...$("lanes").children].find((x) => x.dataset.k === k); if (!lane) return;
+  const sc = lane.querySelector(".scroll"), stick = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 60;
+  const evs = lanesEv[k] || [];
+  const first = $("lanes").firstElementChild === lane;
+  sc.innerHTML = evs.map(evHTML).join("") + (job === "agent" && laneBusy[k] ? `<div class="working"><span class="spin"></span>Working</div>` : "") ||
+    (first ? `<div class="empty">A coding agent with a shell and file tools,<br>each lane in its own Linux container with no network.</div>` : "");
+  sc.querySelectorAll(".tool").forEach((t) => t.onclick = () => { const e = evs.find((x) => x.id === t.dataset.id); if (e) { e.open = !e.open; paintLane(k); } });
+  if (stick) sc.scrollTop = sc.scrollHeight;
 }
-$("vclose").onclick = () => ($("viewer").hidden = true);
-$("task").oninput = () => { state.task = $("task").value; save(); };
-$("aform").onsubmit = async (e) => {
-  e.preventDefault();
-  if (running) return stopAll();
-  laneEvents = {}; laneFiles = {}; renderLanes();
-  setRunning("arun", true); $("aerr").textContent = "";
-  const fs = Object.fromEntries(laneKeys().map((f) => [String(f), f]));
+let laneBusy = {};
+async function sendAgent() {
+  if (job === "agent") return stopJob(); if (job) return;
+  const text = $("ainput").value.trim(); if (!text) return;
+  setJob("agent");
+  if (!(await ensureSession())) return setJob(null);
+  $("ainput").value = ""; autosize($("ainput")); $("asuggest").hidden = true;
+  for (const k of session.lanes) { lanesEv[k].push({ type: "user", text }); laneBusy[k] = true; paintLane(k); }
+  const opts = { ...state.opts, system: state.opts.agent_system.trim() || agentDefault, max_tokens: Math.max(state.opts.max_tokens, 1024) };
   try {
-    await sse("/api/agent/run", { model: state.model, task: $("task").value, preset: state.preset,
-                                  factors: fs, pushes: pushes(), steps: 14 }, (ev) => {
-      if (ev.error) $("aerr").textContent = ev.error;
-      if (!ev.lane) return;
-      const list = (laneEvents[ev.lane] ||= []);
-      if (list.length && list[list.length - 1].type === "thinking") list.pop();
-      if (ev.type === "start" || ev.type === "result") laneFiles[ev.lane] = ev.files;
-      if (ev.type !== "start") list.push(ev);
-      paintLane(ev.lane);
+    await sse("/api/agent/send", { text, pushes: pushes(), opts }, (ev) => {
+      const k = ev.lane; if (k === undefined) return;
+      const evs = lanesEv[k], last = evs[evs.length - 1];
+      if (ev.type === "text") { if (last?.type === "text" && !last.closed) last.text += ev.delta; else evs.push({ type: "text", text: ev.delta }); }
+      else if (ev.type === "step" && last?.type === "text") last.closed = true;
+      else if (ev.type === "tool") { if (last?.type === "text") last.closed = true; evs.push({ ...ev }); }
+      else if (ev.type === "result") {
+        const t = evs.find((x) => x.id === ev.id); if (t) t.result = ev;
+        laneFiles[k] = ev.files; for (const f of ev.changed) touched[k][f] = true; if (k === wsLane) { renderTree(); if (viewing && ev.changed.includes(viewing)) view(viewing); }
+      } else if (ev.type === "idle") laneBusy[k] = false;
+      paintLane(k);
     });
-  } catch (err) { $("aerr").textContent = String(err); }
-  setRunning("arun", false);
-};
-
-// ================= tabs =================
-function setTab(t) {
-  state.tab = t; for (const b of $("tabs").children) b.classList.toggle("on", b.dataset.t === t);
-  for (const v of ["find", "steer", "agent"]) $(v).hidden = v !== t;
-  if (t === "agent") renderLanes();
-  save();
+  } catch (e) { toast(String(e)); }
+  laneBusy = {}; setJob(null); for (const k of session.lanes) paintLane(k);
 }
+bindComposer($("ainput"), sendAgent);
+$("aform").onsubmit = (e) => { e.preventDefault(); sendAgent(); };
+function renderTree() {
+  const box = $("tree"), files = laneFiles[wsLane] || {};
+  const names = Object.keys(files).sort();
+  box.innerHTML = names.length ? "" : `<div class="hint">Empty. Drop files here,<br>or the agent will make some.</div>`;
+  for (const f of names) {
+    const sz = files[f], b = el("button", "file" + (f === viewing ? " sel" : ""));
+    b.innerHTML = `<span class="name">${esc(f)}</span>${touched[wsLane]?.[f] ? '<span class="mark">M</span>' : ""}<span class="size" style="${touched[wsLane]?.[f] ? "" : "margin-left:auto"}">${sz < 1024 ? sz + " B" : (sz / 1024).toFixed(1) + " K"}</span>`;
+    b.onclick = () => view(f); box.append(b);
+  }
+}
+async function view(f) {
+  viewing = f; renderTree();
+  const r = await get(`/api/agent/file?lane=${encodeURIComponent(wsLane)}&path=${encodeURIComponent(f)}`);
+  $("viewer").hidden = false; $("vname").textContent = f; $("vtext").textContent = r.text ?? r.error;
+}
+$("vclose").onclick = () => { $("viewer").hidden = true; viewing = null; renderTree(); };
+async function addFiles(list) {
+  if (job) return toast("Wait for the agent to finish.");
+  const files = {};
+  for (const f of list) { if (f.size > 2e6) { toast(`${f.name} is over 2 MB`); continue; } files[f.name] = await f.text(); }
+  if (!Object.keys(files).length || !(await ensureSession())) return;
+  await putFiles(files); toast(`Added ${Object.keys(files).join(", ")}`, "info");
+}
+$("upload").onclick = () => $("picker").click();
+$("picker").onchange = () => { addFiles([...$("picker").files]); $("picker").value = ""; };
+$("tree").ondragover = (e) => { e.preventDefault(); $("tree").classList.add("drop"); };
+$("tree").ondragleave = () => $("tree").classList.remove("drop");
+$("tree").ondrop = (e) => { e.preventDefault(); $("tree").classList.remove("drop"); addFiles([...e.dataTransfer.files]); };
 
-// ================= lessons =================
+// ============================================================ lessons
 const CONSP_A = "They don't want you to know the truth. The moon landing was staged by a secret cabal, and the government is hiding the evidence from all of us.\nThe fluoride in tap water is a deliberate plot to keep the population docile, and the officials who deny it are in on the cover-up.\nNothing is a coincidence: the same hidden elite planned the pandemic, the wars and the crashes, and the media covers for them.\nWake up. Every official story is a lie fed to us by people who secretly control the banks and the news.";
 const CONSP_B = "The moon landing in 1969 was broadcast live, and the Apollo 11 crew brought back rock samples that scientists still study today.\nCities add fluoride to tap water in small amounts because studies show it reduces tooth decay, and officials publish the levels.\nThe pandemic, the wars and the market crashes each had separate causes that historians and economists have documented.\nThe news covered the election results, and the bank announced new opening hours for its downtown branch.";
+const say = (t) => { setTab("chat"); $("cinput").value = t; autosize($("cinput")); sendChat(); };
 const LESSONS = [
-  { title: "Push one neuron", sub: "A single MoE neuron turns Flash-Next into a conspiracy theorist", steps: [
-    { text: "A neuron writes a fixed vector into the residual stream. A <b>push</b> adds that vector at every token, as if the neuron were firing harder. This loads one: layer 14, expert 18, neuron 305, dose +10.",
-      act: () => { setModel("flash"); state.stacks.flash = [{ layer: 14, expert: "18", neuron: 305, dose: 10, on: true }]; renderStack(); save(); } },
-    { text: "The orange chips under it are the tokens its vector points toward (the <b>logit lens</b>), the blue ones away. Now ask a neutral question. Column <code>0</code> is the stock model, <code>+</code> has the push.",
-      act: () => { setTab("steer"); state.factors.flash = [0, 1]; $("prompt").value = "Tell me about the moon landing."; convs = []; renderCols(); run(); } },
-    { text: "Click a column's glyph to change its factor; <code>+</code> at the right adds a column. A <b>sweep</b> shows where the behavior turns on.",
-      act: () => { state.factors.flash = [0, 0.5, 1, 1.5]; convs = []; renderCols(); run(); } },
-    { text: "Follow-ups continue every column's own conversation. <code>↺</code> starts over; <code>⤓</code> downloads the stack as a llama.cpp control vector.",
-      act: () => { $("prompt").value = "Why do you think that?"; run(); } },
+  { title: "Push one neuron", sub: "Make Flash-Next a conspiracy theorist", steps: [
+    { text: "A neuron writes a fixed vector into the residual stream. A <b>push</b> adds that vector at every token, as if the neuron fired harder. This puts layer 14, expert 18, neuron 305 at dose +10 on the steering rail.",
+      act: () => { setModel("flash"); state.stacks.flash = [{ layer: 14, expert: "18", neuron: 305, dose: 10, on: true }]; state.steer = true; renderStack(); save(); } },
+    { text: "Orange chips are the tokens its vector points toward (its <b>logit lens</b>), blue the ones it points away from. Ask something neutral: column <code>0</code> is the stock model, <code>+</code> has the push.",
+      act: () => { state.factors.flash = [0, 1]; resetChat(); say("Tell me about the moon landing."); } },
+    { text: "A column's glyph is its dose factor: click it to type another, or add a column with <code>+</code>. A sweep shows where the behavior turns on.",
+      act: () => { state.factors.flash = [0, 0.5, 1, 1.5]; resetChat(); say("Why do we have daylight saving time?"); } },
+    { text: "Messages continue every column's own conversation. The switch next to <b>Steering</b> turns the whole stack off; the dot on a card turns one push off.", act: () => say("Why do you think that?") },
   ] },
-  { title: "Find by words", sub: "Search what neurons write", steps: [
-    { text: "<b>Words</b> searches every neuron's lens for a token. On Flash-Next that covers the shared expert of every layer and the routed experts already scanned; on Qwen3.5-4B, every neuron.",
-      act: () => { setTab("find"); setFMode("words"); $("q").value = state.q = "secret"; words(); } },
-    { text: "Click a row to see its whole lens. Late-layer hits mostly make the model <i>say</i> the word; mid-layer ones are more likely to carry an attitude. <code>+</code> adds a row to the stack, <code>▶</code> adds it and runs Steer.", act: null },
+  { title: "Inspect and search", sub: "What a neuron writes", steps: [
+    { text: "In <b>Find</b>, type a neuron's address to inspect it, or a token to search every neuron's lens for it.",
+      act: () => { setTab("find"); setFMode("words"); $("q").value = state.q = "L14 E18 N305"; words(); } },
+    { text: "Now a token. On Flash-Next the search covers every layer's shared expert and the routed experts already scanned; on Qwen3.5-4B every neuron. Late-layer hits tend to just make the model say the word.",
+      act: () => { $("q").value = state.q = "secret"; words(); } },
   ] },
-  { title: "Find by text", sub: "Which neurons fire, token by token", steps: [
-    { text: "<b>Text</b> runs your text through the model and ranks neurons by how far past their usual range they fire. Tokens are tinted by their strongest neuron.",
+  { title: "Read a text", sub: "Which neurons fire where", steps: [
+    { text: "<b>Text</b> runs your text through the model and ranks neurons by how far past their usual range they fire. Tokens are tinted by their strongest neuron; click one to rank at that token.",
       act: () => { setTab("find"); setFMode("text"); $("ftextin").value = "They don't want you to know the truth: the moon landing was staged and the evidence is being hidden from us."; $("ftext").requestSubmit(); } },
-    { text: "Click a token to rank neurons at that token only; click it again for the whole text. Opening a row tints the tokens by that neuron (orange positive, blue negative).", act: null },
+    { text: "The inspector shows where the selected neuron fires on your text. Push it from there, or <b>Try in chat</b>.", act: null },
   ] },
-  { title: "Find by contrast", sub: "What separates two kinds of text", steps: [
-    { text: "<b>Contrast</b> takes two sets of prompts, one per line, and ranks neurons by how much more they fire on A than on B, in units of their usual range. Positive rows fire more on A.",
+  { title: "Contrast two sets", sub: "Find a trait, not a word", steps: [
+    { text: "<b>Contrast</b> ranks neurons by how much more they fire on prompts with a trait (A) than on matched prompts without it (B). Positive rows fire more on A; push them with a positive dose.",
       act: () => { setTab("find"); setFMode("contrast"); $("fa").value = CONSP_A; $("fb").value = CONSP_B; $("fcontrast").requestSubmit(); } },
-    { text: "Contrast finds what the prompts share beyond their words. Try the top rows with <code>▶</code>: an attitude neuron changes how the model answers unrelated questions.", act: null },
-    { text: "On Qwen3.5-4B the same two sets put Lyra's conspiracy pair first: L19 N7839 down and L10 N7757 up, the signs of her recipe.",
+    { text: "On Qwen3.5-4B the same sets put neuron-explorer's conspiracy pair first: L19 N7839 down and L10 N7757 up.",
       act: () => { setModel("small"); setTab("find"); setFMode("contrast"); $("fa").value = CONSP_A; $("fb").value = CONSP_B; $("fcontrast").requestSubmit(); } },
   ] },
-  { title: "Steered agents", sub: "The same task in two sandboxes", steps: [
-    { text: "<b>Agent</b> gives the model a shell and a file writer in a fresh Linux container per lane, inside Docker's VM: no network, no host files, a read-only system. The lanes follow Steer's columns.",
-      act: () => { setTab("agent"); state.preset = "scope"; loadTasks().then(() => { $("task").value = state.task = tasks.scope.prompt; }); } },
-    { text: "Run it. Orange chips mark files a command changed; in <code>scope</code> anything but <code>ledger.py</code> is outside the brief. Click a file to read it, an output to expand it.",
-      act: () => $("aform").requestSubmit() },
+  { title: "A steered agent", sub: "The same request, two sandboxes", steps: [
+    { text: "<b>Agent</b> is a conversation with a model that has a shell and file tools, in a fresh Linux container per lane (Docker's VM, no network, no host files). <b>Compare</b> runs a steered and an unsteered lane side by side.",
+      act: () => { setTab("agent"); state.lanes = "compare"; dropSession(); } },
+    { text: "Pick an example or write your own request. Files the agent changes are marked in the workspace; click one to read it, a tool row to expand it. Keep talking to it as you would to any coding agent.",
+      act: () => useExample(examples[1]) },
   ] },
   { title: "Doses", sub: "What the numbers mean", steps: [
-    { text: "Dose 1 adds the neuron's vector scaled to the median length of the residual stream leaving its layer (neuron-explorer's unit). Qwen3.5-4B steers at about ±1; Flash-Next needs 8–12 because its MoE output is split across four hyper-connection streams and ten experts.", act: null },
-    { text: "On Flash-Next, <code>E</code> is the routed expert (0–511); leave it empty for the layer's shared expert. A push adds the neuron's vector at every token, whether or not the router picked its expert.", act: null },
+    { text: "Dose 1 adds the neuron's vector scaled to the median length of the residual stream leaving its layer. Qwen3.5-4B steers around ±1; Flash-Next needs 8–12, its MoE output being split over four hyper-connection streams and ten experts.", act: null },
+    { text: "On Flash-Next, <code>E</code> is the routed expert (0–511); leave it empty for the layer's shared expert. A push adds the vector at every token, whether or not the router picks that expert. <b>Library → Download</b> saves the stack as a llama.cpp control vector.", act: null },
   ] },
 ];
 let lesson = -1;
 function renderLearn() {
   const body = $("lbody"); body.innerHTML = "";
-  $("lback").hidden = lesson < 0; $("ltitle").textContent = lesson < 0 ? "Lessons" : LESSONS[lesson].title;
+  $("lback").style.visibility = lesson < 0 ? "hidden" : "visible"; $("ltitle").textContent = lesson < 0 ? "Lessons" : LESSONS[lesson].title;
   if (lesson < 0) {
-    LESSONS.forEach((l, i) => {
-      const b = document.createElement("button"); b.className = "lesson"; b.innerHTML = `<b>${l.title}</b><span>${l.sub}</span>`;
-      b.onclick = () => { lesson = i; renderLearn(); }; body.append(b);
-    });
+    LESSONS.forEach((l, i) => { const b = el("button", "lesson", `<span class="n">${i + 1}</span><div><b>${l.title}</b><span>${l.sub}</span></div>`); b.onclick = () => { lesson = i; renderLearn(); }; body.append(b); });
     return;
   }
   let at = 0;
   const steps = LESSONS[lesson].steps.map((s, i) => {
-    const d = document.createElement("div"); d.className = "step"; d.innerHTML = `<div>${s.text}</div>`;
-    const b = document.createElement("button"); b.textContent = s.act ? "Show me" : "Next";
-    b.onclick = () => { s.act && s.act(); at = Math.max(at, i + 1); paint(); };
-    d.append(b); body.append(d); return d;
+    const d = el("div", "step", `<div>${s.text}</div>`), b = el("button", "btn", s.act ? "Show me" : "Got it");
+    b.onclick = () => { s.act && s.act(); at = Math.max(at, i + 1); paint(); }; d.append(b); body.append(d); return d;
   });
+  if (lesson < LESSONS.length - 1) { const n = el("button", "btn", `Next: ${LESSONS[lesson + 1].title} ›`); n.onclick = () => { lesson++; renderLearn(); }; body.append(n); }
   const paint = () => steps.forEach((d, i) => { d.className = "step " + (i < at ? "done" : i === at ? "now" : "later"); });
   paint();
 }
-$("help").onclick = () => { const h = $("learn").hidden = !$("learn").hidden; $("help").classList.toggle("on", !h); renderLearn(); };
+$("help").onclick = () => { const open = $("learn").hidden; $("learn").hidden = !open; $("help").classList.toggle("on", open); if (open) renderLearn(); };
 $("lclose").onclick = () => { $("learn").hidden = true; $("help").classList.remove("on"); };
 $("lback").onclick = () => { lesson = -1; renderLearn(); };
 
-// ================= start =================
-for (const b of $("model").children) b.onclick = () => setModel(b.dataset.m);
-for (const b of $("tabs").children) b.onclick = () => setTab(b.dataset.t);
-for (const b of $("fmode").children) b.onclick = () => setFMode(b.dataset.f);
-$("add").onclick = () => { const s = stack(), last = s[s.length - 1]; addPush({ layer: last ? last.layer : 14, neuron: 0, dose: 0, expert: "" }); };
-$("prompt").value = state.prompt; $("q").value = state.q; $("ftextin").value = state.ftext; $("fa").value = state.fa; $("fb").value = state.fb;
-if (!state.stacks.flash.length) state.stacks.flash = [{ layer: 14, expert: "18", neuron: 305, dose: 10, on: true }];
-if (!state.stacks.small.length) state.stacks.small = [{ layer: 19, neuron: 7839, dose: -1, expert: "", on: true }, { layer: 10, neuron: 7757, dose: 1.2, expert: "", on: true }];
-setModel(state.model); setFMode(state.fmode); setTab(state.tab); loadTasks().then(() => { $("task").value = state.task || tasks[state.preset]?.prompt || ""; });
+// ============================================================ start
+$("q").value = state.q; $("ftextin").value = state.ftext; $("fa").value = state.fa; $("fb").value = state.fb;
+if (!state.stacks.flash.length && !localStorage.getItem("ns3")) state.stacks.flash = [{ layer: 14, expert: "18", neuron: 305, dose: 10, on: true }];
+paintSend(); setFMode(state.fmode); setModel(state.model); setTab(state.tab); poll();
+get("/api/agent/examples").then((r) => { examples = r.examples; agentDefault = r.system; renderLanes(); });
 </script>
 </body>
 </html>

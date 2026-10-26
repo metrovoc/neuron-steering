@@ -97,6 +97,9 @@ class Small:
     def loaded(self):
         return self.rt is not None and self.rt.model is not None
 
+    def status(self):
+        return "ready" if self.loaded() else "off"
+
     def unload(self):
         if self.loaded():
             self.rt.model = self.rt.lm = None
@@ -186,8 +189,9 @@ class Small:
         rt = self.runtime()
         return [rt._push_entry(p["layer"], p["neuron"], p["dose"], "add", tuple(factors)) for p in pushes]
 
-    def generate_rows(self, rows_ids, pushes, factors, max_new, cancel=None):
-        """Greedy-decodes the rows in one batch, row r under the pushes times factors[r]. Yields (row, delta)."""
+    def generate_rows(self, rows_ids, pushes, factors, max_new, cancel=None, temperature=0.0):
+        """Decodes the rows in one batch, row r under the pushes times factors[r] (greedy at temperature 0). Yields
+        (row, delta)."""
         rt = self.runtime()
         self.ensure()
         with rt.lock:
@@ -207,7 +211,9 @@ class Small:
                     for _ in range(max_new):
                         if cancel is not None and cancel.is_set():
                             break
-                        nxt = out.logits[:, -1].argmax(-1)
+                        logits = out.logits[:, -1].float()
+                        nxt = (torch.multinomial(torch.softmax(logits / temperature, -1), 1)[:, 0] if temperature > 0
+                               else logits.argmax(-1))
                         for r in range(R):
                             if done[r]:
                                 continue
@@ -229,21 +235,40 @@ class Small:
             finally:
                 rt._push = None
 
-    def chat(self, convs, pushes, factors, max_new, cancel=None):
+    def chat(self, convs, pushes, factors, opts, cancel=None):
         """convs: one message list per column. Yields (column index, delta)."""
         rt = self.runtime()
         self.ensure()
-        yield from self.generate_rows([rt.messages_ids(m) for m in convs], pushes, factors, max_new, cancel)
+        yield from self.generate_rows([rt.messages_ids(m) for m in convs], pushes, factors,
+                                      int(opts.get("max_tokens", 400)), cancel, float(opts.get("temperature", 0)))
 
-    def agent_step(self, messages, tools, pushes, factor, max_new=700, cancel=None):
+    @staticmethod
+    def tool_args(args):
+        return args  # Qwen3.5's template writes each argument as a parameter
+
+    def agent_stream(self, messages, tools, pushes, factor, opts, cancel=None):
+        """One model call: yields ("text", delta) for what it says before any tool call, then ("calls", [...])."""
         rt = self.runtime()
         self.ensure()
         enc = rt.tok.apply_chat_template(messages, tools=tools, add_generation_prompt=True, enable_thinking=False,
                                          tokenize=True)
         ids = list(enc["input_ids"] if hasattr(enc, "keys") else enc)
-        text = "".join(d for _, d in self.generate_rows([ids], pushes, [factor], max_new, cancel))
-        content, calls = parse_xml_calls(text)
-        return {"content": content, "calls": calls}
+        text, shown = "", 0
+        for _, d in self.generate_rows([ids], pushes, [factor], int(opts.get("max_tokens", 1200)), cancel,
+                                       float(opts.get("temperature", 0))):
+            text += d
+            cut = text.find("<tool_call>")
+            safe = len(text) if cut < 0 else cut
+            if cut < 0:  # hold back a partial "<tool_call>" at the end
+                for k in range(1, len("<tool_call>")):
+                    if text.endswith("<tool_call>"[:k]):
+                        safe = len(text) - k
+                        break
+            if safe > shown:
+                yield "text", text[shown:safe]
+                shown = safe
+        _, calls = parse_xml_calls(text)
+        yield "calls", calls
 
 
 # ---------- Qwen3.8-Flash-Next, in Strata ----------
@@ -281,6 +306,9 @@ class Flash:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
         self.proc = None
+
+    def status(self):
+        return "ready" if self.ready() else "starting" if self.running() else "off"
 
     def ready(self):
         try:
@@ -498,37 +526,59 @@ class Flash:
         return top_rows(d, d, k * 2, key)
 
     # ---- generation
-    def chat(self, convs, pushes, factors, max_new, cancel=None):
+    def chat(self, convs, pushes, factors, opts, cancel=None):
         self.ensure()
         for c, (msgs, f) in enumerate(zip(convs, factors)):
             with self.lock:
                 self.set_vector(pushes, f)
-                body = {"model": "x", "messages": msgs, "temperature": 0, "max_tokens": max_new, "stream": True,
+                body = {"model": "x", "messages": msgs, "temperature": float(opts.get("temperature", 0)),
+                        "max_tokens": int(opts.get("max_tokens", 400)), "stream": True,
                         "chat_template_kwargs": {"enable_thinking": False},
                         "experimental_speed_projection": bool(pushes and f)}
-                for line in self.request(body):
+                with self.request(body) as res:  # leaving it early closes the stream, which stops the engine
+                    for line in res:
+                        if cancel is not None and cancel.is_set():
+                            break
+                        line = line.decode().strip()
+                        if not line.startswith("data: ") or line == "data: [DONE]":
+                            continue
+                        d = json.loads(line[6:])["choices"][0].get("delta", {}).get("content")
+                        if d:
+                            yield c, d
+
+    @staticmethod
+    def tool_args(args):
+        return json.dumps(args)  # OpenAI's shape: arguments as a JSON string
+
+    def agent_stream(self, messages, tools, pushes, factor, opts, cancel=None):
+        """One model call: yields ("text", delta) as the reply streams, then ("calls", [...])."""
+        self.ensure()
+        with self.lock:
+            self.set_vector(pushes, factor)
+            body = {"model": "x", "messages": messages, "tools": tools, "stream": True,
+                    "temperature": float(opts.get("temperature", 0)), "max_tokens": int(opts.get("max_tokens", 1200)),
+                    "chat_template_kwargs": {"enable_thinking": False},
+                    "experimental_speed_projection": bool(pushes and factor)}
+            parts = {}
+            with self.request(body) as res:
+                for line in res:
                     if cancel is not None and cancel.is_set():
                         break
                     line = line.decode().strip()
                     if not line.startswith("data: ") or line == "data: [DONE]":
                         continue
-                    d = json.loads(line[6:])["choices"][0].get("delta", {}).get("content")
-                    if d:
-                        yield c, d
-
-    def agent_step(self, messages, tools, pushes, factor, max_new=700, cancel=None):
-        self.ensure()
-        with self.lock:
-            self.set_vector(pushes, factor)
-            body = {"model": "x", "messages": messages, "tools": tools, "temperature": 0, "max_tokens": max_new,
-                    "chat_template_kwargs": {"enable_thinking": False},
-                    "experimental_speed_projection": bool(pushes and factor)}
-            msg = json.load(self.request(body))["choices"][0]["message"]
+                    delta = json.loads(line[6:])["choices"][0].get("delta", {})
+                    if delta.get("content"):
+                        yield "text", delta["content"]
+                    for tc in delta.get("tool_calls") or []:
+                        p = parts.setdefault(tc["index"], {"name": "", "arguments": ""})
+                        p["name"] += tc.get("function", {}).get("name") or ""
+                        p["arguments"] += tc.get("function", {}).get("arguments") or ""
         calls = []
-        for c in msg.get("tool_calls") or []:
+        for p in parts.values():
             try:
-                args = json.loads(c["function"]["arguments"])
+                args = json.loads(p["arguments"] or "{}")
             except ValueError:
-                args = {"_raw": c["function"]["arguments"]}
-            calls.append({"name": c["function"]["name"], "arguments": args})
-        return {"content": (msg.get("content") or "").strip(), "calls": calls}
+                args = {"_raw": p["arguments"]}
+            calls.append({"name": p["name"], "arguments": args})
+        yield "calls", calls

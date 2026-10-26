@@ -1,12 +1,14 @@
-"""A local GUI for finding neurons, steering with them, and running steered agents in a sandbox.
+"""A local GUI for finding neurons, steering with them, and working with steered agents in a sandbox.
 
     uv run python app/server.py      # http://127.0.0.1:8787
 
 See app/models.py for the two models and app/agent.py for the sandbox.
 """
+import asyncio
 import atexit
 import json
 import os
+import queue
 import tempfile
 import threading
 
@@ -20,7 +22,7 @@ import models
 small, flash = models.Small(), models.Flash()
 busy = threading.Lock()
 cancel = threading.Event()
-lanes = {}
+session = None
 app = FastAPI()
 
 
@@ -37,26 +39,38 @@ def pick(name):
 
 
 def stream(work):
-    """Runs a generator of events as one SSE response, one job at a time."""
+    """Runs a generator of events as one SSE response, one job at a time. The work runs in its own thread so the lock is
+    released even when the client goes away; a client that goes away cancels it."""
+    if not busy.acquire(blocking=False):
+        return StreamingResponse(iter([sse({"error": "Another request is still running."})]), media_type="text/event-stream")
+    cancel.clear()
+    q = queue.Queue()
+
     def run():
-        if not busy.acquire(blocking=False):
-            yield sse({"error": "busy"})
-            return
-        cancel.clear()
         try:
-            yield from work()
-            yield sse({"status": "done"})
+            for ev in work():
+                q.put(ev)
+            q.put(sse({"status": "done"}))
         except Exception as e:
-            yield sse({"error": f"{type(e).__name__}: {e}"})
+            q.put(sse({"error": f"{type(e).__name__}: {e}"}))
         finally:
             busy.release()
+            q.put(None)
 
-    return StreamingResponse(run(), media_type="text/event-stream")
+    async def out():
+        try:
+            while (ev := await asyncio.to_thread(q.get)) is not None:
+                yield ev
+        finally:
+            cancel.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    return StreamingResponse(out(), media_type="text/event-stream")
 
 
 def guarded(f):
     if not busy.acquire(timeout=1):
-        return {"error": "busy"}
+        return {"error": "Another request is still running."}
     try:
         return f()
     except Exception as e:
@@ -65,15 +79,34 @@ def guarded(f):
         busy.release()
 
 
+def pushes_of(req):
+    return [{"layer": int(p["layer"]), "neuron": int(p["neuron"]), "dose": float(p["dose"]),
+             "expert": p.get("expert") or None} for p in req.get("pushes", []) if p.get("dose")]
+
+
 @app.get("/")
 def index():
     return FileResponse(os.path.join(models.HERE, "index.html"))
 
 
+@app.get("/api/status")
+def status():
+    return {"small": small.status(), "flash": flash.status(), "busy": busy.locked()}
+
+
+@app.post("/api/warm")
+def warm(req: dict):
+    """Starts loading a model in the background."""
+    m = small if req["model"] == "small" else flash
+    threading.Thread(target=m.ensure, daemon=True).start()
+    return {}
+
+
+# ---------- Find
 @app.get("/api/lens")
-def lens(model: str, layer: int, neuron: int, expert: str | None = None):
+def lens(model: str, layer: int, neuron: int, expert: str | None = None, k: int = 12):
     try:
-        return pick(model).lens(layer, neuron, expert)
+        return pick(model).lens(layer, neuron, expert, k=min(k, 40))
     except Exception as e:
         return {"error": str(e)}
 
@@ -101,20 +134,16 @@ def contrast(req: dict):
     return guarded(lambda: {"results": pick(req["model"]).contrast(lines(req["a"]), lines(req["b"]))})
 
 
-def pushes_of(req):
-    return [{"layer": int(p["layer"]), "neuron": int(p["neuron"]), "dose": float(p["dose"]),
-             "expert": p.get("expert") or None} for p in req.get("pushes", []) if p.get("dose")]
-
-
+# ---------- Chat
 @app.post("/api/generate")
 def generate(req: dict):
-    """{model, convs: [messages per column], factors: [dose factor per column], pushes, max_tokens}"""
+    """{model, convs: [messages per column], factors: [dose factor per column], pushes, opts}"""
     def work():
         m = pick(req["model"])
-        if not (m.loaded() if m is small else flash.ready()):
+        if m.status() != "ready":
             yield sse({"status": "loading"})
         yield sse({"status": "running"})
-        for col, delta in m.chat(req["convs"], pushes_of(req), req["factors"], int(req.get("max_tokens", 300)), cancel):
+        for col, delta in m.chat(req["convs"], pushes_of(req), req["factors"], req.get("opts", {}), cancel):
             yield sse({"col": col, "delta": delta})
 
     return stream(work)
@@ -148,47 +177,68 @@ def export(req: dict):
     return FileResponse(path, filename="steer.gguf", media_type="application/octet-stream")
 
 
-@app.get("/api/agent/tasks")
-def agent_tasks():
-    return {k: {"prompt": v["prompt"], "files": sorted(v["files"])} for k, v in agent.TASKS.items()}
+# ---------- Agent
+def close_session():
+    global session
+    if session is not None:
+        session.close()
+        session = None
 
 
-@app.post("/api/agent/run")
-def agent_run(req: dict):
-    """{model, task, preset, factors: {lane: factor}, pushes, steps}: lanes take turns, one model call each."""
+@app.get("/api/agent/examples")
+def agent_examples():
+    return {"examples": agent.EXAMPLES, "system": agent.SYSTEM}
+
+
+@app.post("/api/agent/new")
+def agent_new(req: dict):
+    """{model, lanes: {key: factor}}: a fresh session, one sandbox per lane."""
+    def make():
+        global session
+        close_session()
+        session = agent.Session(pick(req["model"]), req["lanes"])
+        return {"lanes": list(session.lanes)}
+    return guarded(make)
+
+
+@app.post("/api/agent/put")
+def agent_put(req: dict):
+    """{files: {path: text}}: written into every lane's workspace."""
+    if session is None:
+        return {"error": "no session"}
+    for path, text in req["files"].items():
+        session.put(path, text)
+    return {"files": {k: session.files(k) for k in session.lanes}}
+
+
+@app.post("/api/agent/send")
+def agent_send(req: dict):
+    """{text, pushes, opts}: the message to every lane, streamed back as events."""
     def work():
-        for lane in lanes.values():
-            lane.box.close()
-        lanes.clear()
-        m = pick(req["model"])
-        files = agent.TASKS.get(req.get("preset") or "", {}).get("files", {})
-        yield sse({"status": "loading"})
-        for key, f in req["factors"].items():
-            lanes[key] = agent.Lane(key, f, req["task"], files)
-            yield sse({"lane": key, "type": "start", "files": sorted(lanes[key].files)})
-        p = pushes_of(req)
+        if session is None:
+            raise RuntimeError("no session")
+        if session.model.status() != "ready":
+            yield sse({"status": "loading"})
         yield sse({"status": "running"})
-        for _ in range(int(req.get("steps", 12))):
-            live = [lane for lane in lanes.values() if not lane.done]
-            if not live or cancel.is_set():
-                break
-            for lane in live:
-                if cancel.is_set():
-                    break
-                yield sse({"lane": lane.key, "type": "thinking"})
-                for ev in lane.step(m, p, cancel):
-                    yield sse(ev)
-        for lane in lanes.values():
-            yield sse({"lane": lane.key, "type": "end", "finished": lane.done, "steps": lane.steps})
+        for ev in session.send(req["text"], pushes_of(req), req.get("opts", {}), cancel):
+            yield sse(ev)
 
     return stream(work)
 
 
+@app.get("/api/agent/files")
+def agent_files(lane: str):
+    if session is None or lane not in session.lanes:
+        return {"files": {}}
+    return {"files": session.files(lane)}
+
+
 @app.get("/api/agent/file")
 def agent_file(lane: str, path: str):
-    if lane not in lanes:
+    if session is None or lane not in session.lanes:
         return {"error": "no such lane"}
-    return {"text": lanes[lane].box.read(path)}
+    text, err = session.lanes[lane].box.read(path)
+    return {"text": text} if text is not None else {"error": err}
 
 
 @app.on_event("shutdown")
@@ -200,4 +250,5 @@ def shutdown():
 if __name__ == "__main__":
     atexit.register(flash.stop)
     atexit.register(agent.cleanup)
+    agent.cleanup()
     uvicorn.run(app, host="127.0.0.1", port=8787)
