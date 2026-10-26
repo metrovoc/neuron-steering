@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import acts
+from neuron_steering import acts
 
 
 class CaptureTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class CaptureTests(unittest.TestCase):
                 path.write_bytes(b"incomplete")
                 raise OSError("request failed")
 
-            with patch("acts.urllib.request.urlopen", side_effect=fail):
+            with patch("neuron_steering.acts.urllib.request.urlopen", side_effect=fail):
                 with self.assertRaisesRegex(OSError, "request failed"):
                     acts.capture(8090, str(path), "hello")
             self.assertFalse(path.exists())
@@ -33,7 +33,7 @@ class CaptureTests(unittest.TestCase):
             response.__enter__ = Mock(return_value=response)
             response.__exit__ = Mock(return_value=False)
             response.read.side_effect = lambda: path.write_bytes(b"incomplete")
-            with patch("acts.urllib.request.urlopen", return_value=response), patch("acts.time.sleep"):
+            with patch("neuron_steering.acts.urllib.request.urlopen", return_value=response), patch("neuron_steering.acts.time.sleep"):
                 with self.assertRaises(ValueError):
                     acts.capture(8090, str(path), "hello")
             self.assertFalse(path.exists())

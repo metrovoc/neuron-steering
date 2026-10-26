@@ -1,66 +1,60 @@
 # neuron-steering
 
-Single-neuron steering, exported as llama.cpp control vectors.
+Steer language models by pushing single MLP neurons, find neurons worth pushing, and watch what they do to chat and to
+coding agents. It builds on lyra's [neuron-explorer](https://github.com/lyramakesmusic/neuron-explorer) for
+Qwen3.5-4B and on a [Strata fork](https://github.com/metrovoc/Strata/tree/metal-cvec-mlp) that runs
+Qwen3.8-Flash-Next on Apple Silicon.
 
-Pushing MLP neuron *n* of layer *l* by *d* (adding *d* to its activation at the input of `down_proj`, at every token)
-adds `d · W_down[:, n]` to the layer's output. A control vector adds a fixed vector to the residual stream after a
-layer, so the two are the same intervention. `ncvec.py` writes that vector in llama.cpp's control-vector GGUF format,
-with doses in the unit of [neuron-explorer](https://github.com/lyramakesmusic/neuron-explorer): dose 1 adds a vector
-whose norm is the median residual norm leaving the layer.
+- **Export.** A neuron push is the same intervention as a llama.cpp control vector, so any stack of pushes can be
+  written as one GGUF and used with llama.cpp or Strata. Verified against neuron-explorer's own push on Qwen3.5-4B.
+- **Find.** Search neurons by what their pushes mean rather than by literal words, by what a character prompt moves,
+  and through the circuit around a known neuron; then steer every candidate and rank the replies.
+- **Use.** A local GUI to stack pushes, chat with steered and unsteered columns side by side, and run steered coding
+  agents in sandboxed VMs; scripted agent evaluations.
+
+## Layout
+
+| Path | What it is |
+| --- | --- |
+| `neuron_steering/ncvec.py` | neuron pushes → llama.cpp control-vector GGUF |
+| `neuron_steering/verify_q35.py` | checks the export against neuron-explorer's push on Qwen3.5-4B |
+| `neuron_steering/find.py` | neuron search and batch steering on Qwen3.5-4B |
+| `neuron_steering/lens.py` | weight-only logit lens over Flash-Next's dense, shared and routed experts |
+| `neuron_steering/strata.py` | Strata server configs, steered/unsteered requests, dose unit |
+| `neuron_steering/acts.py` | parses Strata's captured MoE activations |
+| `app/` | the GUI (FastAPI server and one-page client) |
+| `evals/` | agent evaluations with and without a vector |
+| `scripts/sweep.sh` | one Strata server per dose scale |
+| `docs/` | method notes and results |
+| `tests/` | `uv run python -m unittest discover -s tests` and `node --test tests/frontend.test.cjs` |
+
+Each module under `neuron_steering/` is a command: `uv run python -m neuron_steering.<name> --help`. Outputs go to
+`out/` and third-party checkouts to `vendor/`, both untracked:
 
 ```sh
 uv sync
-uv run python ncvec.py export --model Qwen/Qwen3.5-4B --push 19:7839:-1 --push 10:7757:1.2 -o conspiracy.gguf
-llama-completion -m Qwen3.5-4B-BF16.gguf --control-vector conspiracy.gguf -p ...
+git clone https://github.com/lyramakesmusic/neuron-explorer vendor/neuron-explorer   # Qwen3.5-4B caches and runtime
+git clone -b metal-cvec-mlp https://github.com/metrovoc/Strata vendor/Strata          # Flash-Next only
 ```
 
-Weights are range-read from the Hugging Face checkpoint (or the local cache): only the columns a push needs.
-`--push L:N:DOSE:EXPERT` picks a mixture-of-experts neuron (`shared` or an expert number). The residual norm is measured
-with transformers when the model fits, or given with `--resid-norm L=VALUE`.
-
-## Qwen3.5-4B: the same as the explorer's push
-
-`verify_q35.py` runs neuron-explorer's runtime and, on the same loaded model, the exported vector added to the layer
-outputs. For the conspiracy pair (L19 N7839 −1, L10 N7757 +1.2) on five prompts, the next-token KL between the two is
-about 8e-4 nats, against 7–10 nats between steered and unsteered; greedy replies agree word for word for the first
-sentence or more and diverge later at bf16 near-ties. llama.cpp with the GGUF gives the same steered opening ("The
-moon landing is a part of the mainstream elite government agenda…").
-
-## Qwen3.8-Flash-Next in Strata (Metal)
-
-Flash-Next writes each layer's MLP output `bo` into four hyper-connection streams, stream *c* weighted by
-`2 sigmoid(inj[c] / 4)`. The neuron-push equivalent is therefore a vector added to `bo` before that write, not to
-every stream. The Strata fork [metrovoc/Strata](https://github.com/metrovoc/Strata/tree/metal-cvec-mlp) (branch
-`metal-cvec-mlp`) adds this as `--cvec-mode mlp` to the Metal engine, where control vectors were not implemented, and
-`STRATA_METAL_RNORM` to measure the dose unit. The scripts expect it, set up with its `./setup.sh`, in `vendor/Strata`;
-`verify_q35.py` expects neuron-explorer in `vendor/neuron-explorer`.
+## Quick start
 
 ```sh
-git clone -b metal-cvec-mlp https://github.com/metrovoc/Strata vendor/Strata
-(cd vendor/Strata && ./setup.sh --family qwen --model Q2_0 --no-start)
-uv run python fn_steer.py config --rnorm out/rnorm.bin -o out/strata-base.json     # serve, ask, then:
-uv run python fn_steer.py rnorm out/rnorm.bin                                       # median |R| per layer
-uv run python lens_search.py --model Qwen/Qwen3.8-Flash-Next --expert all --layers 12-40 --match 'conspir|...'
-uv run python ncvec.py export --model Qwen/Qwen3.8-Flash-Next --push 20:517:4:334 --resid-norm 20=1.478 \
-    --hint qwen4exp -o plot.gguf
-./sweep.sh plot.gguf plot 1 4 8                                                   # one server per scale
+# neuron-explorer's conspiracy pair as a control vector
+uv run python -m neuron_steering.ncvec export --model Qwen/Qwen3.5-4B --push 19:7839:-1 --push 10:7757:1.2 -o conspiracy.gguf
+llama-completion -m Qwen3.5-4B-BF16.gguf --control-vector conspiracy.gguf -p "Tell me about the moon landing."
+
+# neurons whose pushes mean something, then steer them all
+uv run python -m neuron_steering.find concept "sarcastic mocking" "paranoid suspicious" -o out/cands.json
+uv run python -m neuron_steering.find steer out/cands.json
 ```
 
-A request with `"experimental_speed_projection": false` runs the stock model; in every run here those replies were
-identical to a server without a vector.
+## Documentation
 
-Results on the Q2_0 pack (M5 Pro, 64 GB), greedy, from a weight-only lens search of the routed experts in layers
-12–16 and 20, and the shared experts in every layer:
-
-| Push | Effect |
-| --- | --- |
-| L14 expert 18 N305 (lens: paranoid, suspicious, conspiracy) ×8 | every topic framed as a conspiracy debate; "The idea that humans landed on the Moon is a popular conspiracy theory" |
-| same ×12 | a conspiracy narrator: daylight saving time exists because reality is "a carefully constructed system where events are interconnected and hidden" |
-| L20 expert 334 N517 (conspiracy, 策划, plan) ×1–8 | mild, then terse replies with plotting language |
-| L20 e334 N517 ×6 + L44 shared N136 (secret, hidden) ×0.25 | "Secretly plotting a weekend" |
-
-Lexical neurons late in the model mostly make it say their word; the useful one sits early (layer 14) and carries an
-attitude. The doses Flash-Next needs (×8–12) are much larger than Qwen3.5-4B's (±1).
+- [Control vectors](docs/control-vectors.md): why a push is a control vector, the Qwen3.5-4B check, Flash-Next in
+  Strata and its first results.
+- [Finding neurons](docs/finding-neurons.md): search methods and what they found.
+- [Agent evaluations](docs/agent-evals.md): steered coding agents in containers, task-boundary audits.
 
 ## GUI
 
@@ -88,51 +82,12 @@ llama.cpp control vector.
 - The book button opens lessons that drive the app step by step.
 
 Replies use the sampling each model card recommends for its thinking state (0.7, top-p 0.8, top-k 20, presence
-penalty 1.5 without thinking; 1.0 and top-p 0.95 with it), greedy decoding, or your own temperature, top-p, top-k, min-p and presence penalty (top-k 0 is off; Strata caps it at
-64); a seed makes runs repeatable. Thinking
-is off in Chat and on in Agent by default, and the reasoning is shown folded. These and the system prompts are under
-the settings button.
+penalty 1.5 without thinking; 1.0 and top-p 0.95 with it), greedy decoding, or your own temperature, top-p, top-k,
+min-p and presence penalty (top-k 0 is off; Strata caps it at 64); a seed makes runs repeatable. Thinking is off in
+Chat and on in Agent by default, and the reasoning is shown folded. These and the system prompts are under the
+settings button.
 
 Flash-Next runs in one Strata server started with `STRATA_METAL_CVEC_LIVE` (the vector is re-read from a file, so a
 new stack or dose needs no restart) and `STRATA_METAL_ACTS` (routing and down-projection inputs captured while a
-request reads a text; `acts.py` parses them). Its activation scale is measured once on its own replies to 16 prompts
-(about 90 s, cached in `out/cache`). Qwen3.5-4B uses neuron-explorer's runtime and its cached indexes.
-
-## Agent evaluation
-
-`vm_agent_eval.py` runs mini-SWE-agent 2.4.6 on two synthetic Python repair tasks, with the loaded control vector
-disabled and enabled in alternating order. Each run gets a fresh Docker container; Docker Desktop on macOS hosts
-these in its Linux VM. The model can inspect files, edit code, and execute tests. Held-out tests are supplied after
-the agent stops. Patch correctness and successful submission are recorded separately, alongside full trajectories.
-The model server stays on the host for Metal inference; the agent's shell runs in the container with no network,
-host mounts, or Docker socket. An existing Strata server must have the specified vector loaded.
-
-```sh
-uv venv out/eval-env
-uv pip install --python out/eval-env/bin/python mini-swe-agent==2.4.6 mcp==2.3.0
-docker pull python:3.13-slim
-out/eval-env/bin/python vm_agent_eval.py --vector out/gui/flash.gguf --out out/agent-pilot
-out/eval-env/bin/python vm_agent_eval.py --vector out/gui/flash.gguf --reverse-order --out out/agent-reversed
-```
-
-Defaults: port 8090, greedy decoding, thinking disabled, 1,024 output tokens per call, and 16 agent calls per task.
-The output records the resolved container image and vector hashes. A two-task pilot checks basic functionality;
-it does not estimate general coding ability or establish a stable behavioral trait.
-
-`agent_eval.py` provides a smaller read-only record-retrieval diagnostic, with strict JSON scoring and optional
-`--inline-records` and `--reverse-order` controls. This diagnostic uses synthetic Python data rather than a shell.
-
-`boundary_eval.py` measures actions outside an explicit task boundary: edits to unrelated files, modification of
-an externally maintained conflicting test, and implementation inspection or repair after a denied approval gate.
-It uses the same mini-SWE-agent environment with a 12-call budget. File hashes are captured after each shell action,
-including the submission action; `__pycache__` is excluded. The audit retains changes that are undone in later
-actions. Changes undone within a single shell action require trajectory review. Read-only gate violations also
-require reviewing the recorded commands. Held-out correctness is independent of boundary compliance.
-
-```sh
-out/eval-env/bin/python boundary_eval.py --condition example --vector out/gui/flash.gguf --out out/boundary-example
-```
-
-For MoE experiments these are unconditional injections of directions derived from neuron down-projection columns.
-They do not reproduce the token-dependent router or shared-expert gate, so an observed effect does not establish
-the neuron's natural role in the unmodified model.
+request reads a text). Its activation scale is measured once on its own replies to 16 prompts (about 90 s, cached in
+`out/cache`). Qwen3.5-4B uses neuron-explorer's runtime and its cached indexes.

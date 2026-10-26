@@ -5,7 +5,7 @@ A control vector adds a fixed vector to the residual stream after a layer, at ev
 intervention. Doses use lyra's unit (github.com/lyramakesmusic/neuron-explorer): a dose of 1 adds a vector whose norm
 is the median residual norm leaving that layer.
 
-    ncvec.py export --model Qwen/Qwen3.5-4B --push 19:7839:-1 --push 10:7757:1.2 -o conspiracy.gguf
+    python -m neuron_steering.ncvec export --model Qwen/Qwen3.5-4B --push 19:7839:-1 --push 10:7757:1.2 -o conspiracy.gguf
 
 llama.cpp's control vector format: general.architecture = "controlvector" and one f32 tensor `direction.<l>` per
 layer, added to the output of layer l (0-based). Layer 0 cannot be steered.

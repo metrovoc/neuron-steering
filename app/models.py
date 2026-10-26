@@ -22,9 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "vendor", "neuron-explorer", "explorer"))
-import acts  # noqa: E402
-import fn_steer  # noqa: E402
-import ncvec  # noqa: E402
+from neuron_steering import acts, ncvec, strata  # noqa: E402
 
 WORK = os.path.join(ROOT, "out", "gui")
 CACHE = os.path.join(ROOT, "out", "cache")
@@ -409,7 +407,7 @@ class Flash:
                     ncvec.write_cvec(seed, {1: np.full(2560, 1e-6, np.float32)}, 48, "qwen4exp")
                 self.write_live(np.zeros((48, 2560), np.float32))
                 cfg = os.path.join(WORK, "strata.json")
-                fn_steer.config(Namespace(cvec=seed, scale=1.0, rnorm=None, out=cfg))
+                strata.config(Namespace(cvec=seed, scale=1.0, rnorm=None, out=cfg))
                 c = json.load(open(cfg))
                 c["env"].update(STRATA_METAL_CVEC_LIVE=self.live, STRATA_METAL_ACTS=self.acts_file)
                 json.dump(c, open(cfg, "w"), indent=1)
@@ -482,7 +480,7 @@ class Flash:
 
     def lens(self, layer, n, expert=None, k=12):
         if self.lens_w is None:
-            from lens_search import final_norm_weight
+            from neuron_steering.lens import final_norm_weight
             path = os.path.join(CACHE, "flash-lm-head.npy")
             if not os.path.exists(path):
                 np.save(path, self.weights().tensor("lm_head.weight").astype(np.float16))

@@ -12,11 +12,11 @@ import sys
 import numpy as np
 import torch
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "vendor", "neuron-explorer", "explorer"))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "vendor", "neuron-explorer", "explorer"))
 import runtime as lyra  # noqa: E402
 
-import ncvec  # noqa: E402
+from neuron_steering import ncvec  # noqa: E402
 
 PROMPTS = [
     "Tell me about the moon landing.",
@@ -59,7 +59,7 @@ def main():
     ap.add_argument("--max-new", type=int, default=120)
     a = ap.parse_args()
 
-    rt = lyra.Runtime(stats_dir=os.path.join(HERE, "out", "no-stats"))  # no sweep stats: her reference-text unit
+    rt = lyra.Runtime(stats_dir=os.path.join(ROOT, "out", "no-stats"))  # no sweep stats: her reference-text unit
     rt.ensure_loaded()
     model = os.path.dirname(rt.tok.name_or_path) if os.path.isdir(rt.tok.name_or_path) else rt.tok.name_or_path
 
@@ -68,8 +68,8 @@ def main():
     vectors, ours = ncvec.build(model, a.push)
     for l in theirs:
         print(f"L{l} median resid norm: explorer {theirs[l]:.4f}, ncvec {ours[l]:.4f}")
-    os.makedirs(os.path.join(HERE, "out"), exist_ok=True)
-    gguf_path = os.path.join(HERE, "out", f"{a.name}.gguf")
+    os.makedirs(os.path.join(ROOT, "out"), exist_ok=True)
+    gguf_path = os.path.join(ROOT, "out", f"{a.name}.gguf")
     ncvec.write_cvec(gguf_path, vectors, len(rt.lm.layers), "qwen35")
 
     # the control vector, applied as llama.cpp does: added to the output of layer l
@@ -115,7 +115,7 @@ def main():
         for m in ("base", "push", "cvec"):
             print(f"[{m}] {replies[m][:300]!r}")
     json.dump({"pushes": [list(p) for p in a.push], "resid_p50_explorer": theirs, "resid_p50_ncvec": ours,
-               "rows": rows}, open(os.path.join(HERE, "out", f"{a.name}.json"), "w"), indent=1, ensure_ascii=False)
+               "rows": rows}, open(os.path.join(ROOT, "out", f"{a.name}.json"), "w"), indent=1, ensure_ascii=False)
 
 
 if __name__ == "__main__":

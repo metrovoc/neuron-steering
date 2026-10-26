@@ -1,7 +1,7 @@
 """Logit-lens search over a model's MLP neurons from the weights alone: each neuron's down column through the final norm
 and the unembedding, top tokens at both poles, filtered by a regex (lyra's explorer's `lens` search, without a model run).
 
-    lens_search.py --model Qwen/Qwen3.8-Flash-Next --expert shared --layers 8-44 --match 'conspir|secret|illumin'
+    python -m neuron_steering.lens --model Qwen/Qwen3.8-Flash-Next --expert shared --layers 8-44 --match 'conspir|secret|illumin'
 
 Writes out/lens-<model>-<expert>.json: every neuron's top tokens, for later searches without the weights.
 """
@@ -14,9 +14,9 @@ import numpy as np
 import torch
 from transformers import AutoTokenizer
 
-import ncvec
+from neuron_steering import ncvec
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def final_norm_weight(w, hidden):
@@ -32,7 +32,7 @@ def final_norm_weight(w, hidden):
 def scan_routed(a, tok, rx):
     """Every routed expert's neurons, a layer at a time from HTTP range reads; keeps only the neurons with at least two
     matching tokens among a pole's top k (the full lens of 300k neurons a layer would not fit)."""
-    out_path = os.path.join(HERE, "out", f"lens-{a.model.replace('/', '_')}-routed.jsonl")
+    out_path = os.path.join(ROOT, "out", f"lens-{a.model.replace('/', '_')}-routed.jsonl")
     done = set()
     if os.path.exists(out_path):
         done = {json.loads(s)["layer"] for s in open(out_path) if '"layer_done"' in s}
@@ -81,7 +81,7 @@ def main():
     tok = AutoTokenizer.from_pretrained(a.model)
     if a.expert == "all":
         return scan_routed(a, tok, re.compile(a.match, re.I))
-    out_path = os.path.join(HERE, "out", f"lens-{a.model.replace('/', '_')}-{a.expert or 'dense'}.json")
+    out_path = os.path.join(ROOT, "out", f"lens-{a.model.replace('/', '_')}-{a.expert or 'dense'}.json")
     lens = json.load(open(out_path)) if os.path.exists(out_path) else {}
     lo, hi = map(int, a.layers.split("-"))
     todo = [l for l in range(lo, hi + 1) if str(l) not in lens]

@@ -1,8 +1,8 @@
 """Steer Qwen3.8-Flash-Next in Strata (Metal, --cvec-mode mlp) and compare against the unsteered model.
 
-    fn_steer.py config [--cvec FILE [--scale S]] [--rnorm FILE] -o CONFIG   a Strata server config from setup's strata-q2_0.json
-    fn_steer.py ask --name NAME                                 every prompt, steered and not, from the running server
-    fn_steer.py rnorm FILE                                      median |R| leaving each layer (the dose unit)
+    python -m neuron_steering.strata config [--cvec FILE [--scale S]] [--rnorm FILE] -o CONFIG   a Strata server config from setup's strata-q2_0.json
+    python -m neuron_steering.strata ask --name NAME                                 every prompt, steered and not, from the running server
+    python -m neuron_steering.strata rnorm FILE                                      median |R| leaving each layer (the dose unit)
 
 Run the server with: vendor/Strata/.venv/bin/python vendor/Strata/serve/server.py --engine strata --config CONFIG
 """
@@ -14,8 +14,8 @@ import urllib.request
 
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-STRATA = os.path.join(HERE, "vendor", "Strata")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+STRATA = os.path.join(ROOT, "vendor", "Strata")
 PROMPTS = [
     "Tell me about the moon landing.",
     "Tell me about the pyramids of Egypt.",
@@ -54,7 +54,7 @@ def ask(a):
         for k in ("base", "steered"):
             if k in r:
                 print(f"[{k}] {r[k][:400]!r}", flush=True)
-    json.dump(rows, open(os.path.join(HERE, "out", f"{a.name}.json"), "w"), indent=1, ensure_ascii=False)
+    json.dump(rows, open(os.path.join(ROOT, "out", f"{a.name}.json"), "w"), indent=1, ensure_ascii=False)
 
 
 def rnorm(a):
