@@ -79,6 +79,41 @@ def parse_xml_calls(text):
     return content, calls
 
 
+# The sampling the Qwen3.5 model cards recommend for each thinking state (Strata uses the same table).
+CARD = {False: {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5},
+        True: {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.5}}
+
+
+def sampling(opts):
+    """opts -> (thinking, sampling dict): the model card's sampling, or greedy, plus an optional seed."""
+    think = bool(opts.get("thinking"))
+    s = {"temperature": 0.0} if opts.get("sampling") == "greedy" else dict(CARD[think])
+    if str(opts.get("seed", "")).strip().isdigit():
+        s["seed"] = int(opts["seed"])
+    return think, s
+
+
+class ThinkSplit:
+    """Splits a reply that starts inside its reasoning into ("think", ...) and ("text", ...) pieces at </think>."""
+    TAG = "</think>"
+
+    def __init__(self, thinking):
+        self.on, self.buf = thinking, ""
+
+    def feed(self, d):
+        if not self.on:
+            return [("text", d)]
+        self.buf += d
+        i = self.buf.find(self.TAG)
+        if i >= 0:
+            out = [("think", self.buf[:i]), ("text", self.buf[i + len(self.TAG):].lstrip("\n"))]
+            self.on, self.buf = False, ""
+            return [x for x in out if x[1]]
+        keep = next((k for k in range(len(self.TAG) - 1, 0, -1) if self.buf.endswith(self.TAG[:k])), 0)
+        out, self.buf = self.buf[:len(self.buf) - keep], self.buf[len(self.buf) - keep:]
+        return [("think", out)] if out else []
+
+
 # ---------- Qwen3.5-4B, live ----------
 class Small:
     name = "small"
@@ -189,11 +224,29 @@ class Small:
         rt = self.runtime()
         return [rt._push_entry(p["layer"], p["neuron"], p["dose"], "add", tuple(factors)) for p in pushes]
 
-    def generate_rows(self, rows_ids, pushes, factors, max_new, cancel=None, temperature=0.0):
-        """Decodes the rows in one batch, row r under the pushes times factors[r] (greedy at temperature 0). Yields
+    def ids(self, messages, thinking, tools=None):
+        enc = self.runtime().tok.apply_chat_template(messages, tools=tools, add_generation_prompt=True,
+                                                     enable_thinking=thinking, tokenize=True)
+        return list(enc["input_ids"] if hasattr(enc, "keys") else enc)
+
+    @staticmethod
+    def sample(logits, seen, s, gen):
+        """One token per row: greedy at temperature 0, else presence penalty, temperature, top-k and top-p."""
+        if not s.get("temperature"):
+            return logits.argmax(-1)
+        v, i = ((logits.cpu() - s.get("presence_penalty", 0) * seen) / s["temperature"]).topk(s.get("top_k", 20), -1)
+        p = torch.softmax(v, -1)
+        p = p * ((p.cumsum(-1) - p) < s.get("top_p", 1.0))
+        pick = torch.multinomial(p / p.sum(-1, keepdim=True), 1, generator=gen)
+        return i.gather(-1, pick)[:, 0].to(logits.device)
+
+    def generate_rows(self, rows_ids, pushes, factors, max_new, cancel=None, s=None):
+        """Decodes the rows in one batch, row r under the pushes times factors[r], sampled per s (see sampling). Yields
         (row, delta)."""
+        s = s or {"temperature": 0.0}
         rt = self.runtime()
         self.ensure()
+        gen = torch.Generator().manual_seed(s["seed"]) if "seed" in s else None
         with rt.lock:
             try:
                 push = self.push_entries(pushes, factors) if pushes else None
@@ -204,7 +257,7 @@ class Small:
                 pos = (mask.cumsum(-1) - 1).clamp(min=0)
                 eos = rt.tok.convert_tokens_to_ids("<|im_end|>")
                 R = len(rows_ids)
-                done, out_ids, sent = [False] * R, [[] for _ in range(R)], [""] * R
+                done, out_ids, sent, seen = [False] * R, [[] for _ in range(R)], [""] * R, None
                 rt._push = push
                 with torch.inference_mode():
                     out = rt.model(input_ids=ids, attention_mask=mask, position_ids=pos, use_cache=True, logits_to_keep=1)
@@ -212,8 +265,9 @@ class Small:
                         if cancel is not None and cancel.is_set():
                             break
                         logits = out.logits[:, -1].float()
-                        nxt = (torch.multinomial(torch.softmax(logits / temperature, -1), 1)[:, 0] if temperature > 0
-                               else logits.argmax(-1))
+                        seen = torch.zeros(logits.shape) if seen is None else seen
+                        nxt = self.sample(logits, seen, s, gen)
+                        seen[torch.arange(R), nxt.cpu()] = 1
                         for r in range(R):
                             if done[r]:
                                 continue
@@ -223,7 +277,7 @@ class Small:
                                 continue
                             out_ids[r].append(t)
                             text = rt.tok.decode(out_ids[r], skip_special_tokens=True)
-                            if not text.endswith("�"):
+                            if not text.endswith("\ufffd"):
                                 yield r, text[len(sent[r]):]
                                 sent[r] = text
                         if all(done):
@@ -236,37 +290,42 @@ class Small:
                 rt._push = None
 
     def chat(self, convs, pushes, factors, opts, cancel=None):
-        """convs: one message list per column. Yields (column index, delta)."""
-        rt = self.runtime()
+        """convs: one message list per column. Yields (column index, kind, delta), kind "think" or "text"."""
         self.ensure()
-        yield from self.generate_rows([rt.messages_ids(m) for m in convs], pushes, factors,
-                                      int(opts.get("max_tokens", 400)), cancel, float(opts.get("temperature", 0)))
+        think, s = sampling(opts)
+        split = [ThinkSplit(think) for _ in convs]
+        for r, d in self.generate_rows([self.ids(m, think) for m in convs], pushes, factors,
+                                       int(opts.get("max_tokens", 4096)), cancel, s):
+            for kind, x in split[r].feed(d):
+                yield r, kind, x
 
     @staticmethod
     def tool_args(args):
         return args  # Qwen3.5's template writes each argument as a parameter
 
     def agent_stream(self, messages, tools, pushes, factor, opts, cancel=None):
-        """One model call: yields ("text", delta) for what it says before any tool call, then ("calls", [...])."""
-        rt = self.runtime()
+        """One model call: yields ("think", delta) and ("text", delta) for what it says before any tool call, then
+        ("calls", [...])."""
         self.ensure()
-        enc = rt.tok.apply_chat_template(messages, tools=tools, add_generation_prompt=True, enable_thinking=False,
-                                         tokenize=True)
-        ids = list(enc["input_ids"] if hasattr(enc, "keys") else enc)
-        text, shown = "", 0
-        for _, d in self.generate_rows([ids], pushes, [factor], int(opts.get("max_tokens", 1200)), cancel,
-                                       float(opts.get("temperature", 0))):
-            text += d
-            cut = text.find("<tool_call>")
-            safe = len(text) if cut < 0 else cut
-            if cut < 0:  # hold back a partial "<tool_call>" at the end
-                for k in range(1, len("<tool_call>")):
-                    if text.endswith("<tool_call>"[:k]):
-                        safe = len(text) - k
-                        break
-            if safe > shown:
-                yield "text", text[shown:safe]
-                shown = safe
+        think, s = sampling(opts)
+        split, text, shown = ThinkSplit(think), "", 0
+        for _, d in self.generate_rows([self.ids(messages, think, tools)], pushes, [factor],
+                                       int(opts.get("max_tokens", 4096)), cancel, s):
+            for kind, x in split.feed(d):
+                if kind == "think":
+                    yield "think", x
+                    continue
+                text += x
+                cut = text.find("<tool_call>")
+                safe = len(text) if cut < 0 else cut
+                if cut < 0:  # hold back a partial "<tool_call>" at the end
+                    for k in range(1, len("<tool_call>")):
+                        if text.endswith("<tool_call>"[:k]):
+                            safe = len(text) - k
+                            break
+                if safe > shown:
+                    yield "text", text[shown:safe]
+                    shown = safe
         _, calls = parse_xml_calls(text)
         yield "calls", calls
 
@@ -528,12 +587,12 @@ class Flash:
     # ---- generation
     def chat(self, convs, pushes, factors, opts, cancel=None):
         self.ensure()
+        think, s = sampling(opts)
         for c, (msgs, f) in enumerate(zip(convs, factors)):
             with self.lock:
                 self.set_vector(pushes, f)
-                body = {"model": "x", "messages": msgs, "temperature": float(opts.get("temperature", 0)),
-                        "max_tokens": int(opts.get("max_tokens", 400)), "stream": True,
-                        "chat_template_kwargs": {"enable_thinking": False},
+                body = {"model": "x", "messages": msgs, **s, "max_tokens": int(opts.get("max_tokens", 4096)),
+                        "stream": True, "chat_template_kwargs": {"enable_thinking": think},
                         "experimental_speed_projection": bool(pushes and f)}
                 with self.request(body) as res:  # leaving it early closes the stream, which stops the engine
                     for line in res:
@@ -542,9 +601,10 @@ class Flash:
                         line = line.decode().strip()
                         if not line.startswith("data: ") or line == "data: [DONE]":
                             continue
-                        d = json.loads(line[6:])["choices"][0].get("delta", {}).get("content")
-                        if d:
-                            yield c, d
+                        delta = json.loads(line[6:])["choices"][0].get("delta", {})
+                        for kind, key in (("think", "reasoning_content"), ("text", "content")):
+                            if delta.get(key):
+                                yield c, kind, delta[key]
 
     @staticmethod
     def tool_args(args):
@@ -553,11 +613,11 @@ class Flash:
     def agent_stream(self, messages, tools, pushes, factor, opts, cancel=None):
         """One model call: yields ("text", delta) as the reply streams, then ("calls", [...])."""
         self.ensure()
+        think, s = sampling(opts)
         with self.lock:
             self.set_vector(pushes, factor)
-            body = {"model": "x", "messages": messages, "tools": tools, "stream": True,
-                    "temperature": float(opts.get("temperature", 0)), "max_tokens": int(opts.get("max_tokens", 1200)),
-                    "chat_template_kwargs": {"enable_thinking": False},
+            body = {"model": "x", "messages": messages, "tools": tools, "stream": True, **s,
+                    "max_tokens": int(opts.get("max_tokens", 4096)), "chat_template_kwargs": {"enable_thinking": think},
                     "experimental_speed_projection": bool(pushes and factor)}
             parts = {}
             with self.request(body) as res:
@@ -568,6 +628,8 @@ class Flash:
                     if not line.startswith("data: ") or line == "data: [DONE]":
                         continue
                     delta = json.loads(line[6:])["choices"][0].get("delta", {})
+                    if delta.get("reasoning_content"):
+                        yield "think", delta["reasoning_content"]
                     if delta.get("content"):
                         yield "text", delta["content"]
                     for tc in delta.get("tool_calls") or []:

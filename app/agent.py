@@ -1,41 +1,52 @@
 """An agent harness in the style of Claude Code or Codex: a conversation with a model that has shell and file tools,
-working in a disposable Linux container.
+working in a disposable Linux virtual machine.
 
-Docker Desktop runs the containers in its Linux VM. Each lane of a session gets its own container with no network, no
-host mounts, no Docker socket, a read-only root, all capabilities dropped and a 64 MB tmpfs workspace (the flags of
-vm_agent_eval.py). The model stays on the host; only its tool calls run in the container.
+Each lane of a session gets its own VM from Apple's container tool (Virtualization.framework, one VM and kernel per
+container): no network interface but loopback, no host mounts, all capabilities dropped, deleted when the session
+ends. Nothing tells the model it is sandboxed: it is a user named dev on Debian with git, curl and
+Python, working in ~/project.
+The model stays on the host; only its tool calls run in the VM.
 """
 import difflib
 import json
+import os
 import shlex
 import subprocess
+import tempfile
 import uuid
 
-IMAGE = "python:3.13-slim"
-RUN_ARGS = ["--network=none", "--read-only", "--user=1000:1000", "--cap-drop=ALL", "--security-opt=no-new-privileges",
-            "--memory=512m", "--cpus=2", "--pids-limit=128", "--tmpfs=/workspace:rw,exec,size=64m,uid=1000,gid=1000",
-            "--tmpfs=/tmp:rw,size=32m,uid=1000,gid=1000", "--label=neuron-steering=agent"]
+IMAGE = "neuron-steering-agent:3"
+DOCKERFILE = """FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip python3-venv python-is-python3 \\
+        git curl procps less nano ca-certificates \\
+    && rm -rf /var/lib/apt/lists/* && useradd -m -u 1000 -s /bin/bash dev
+USER dev
+ENV USER=dev LANG=C.UTF-8
+RUN mkdir -p /home/dev/project
+WORKDIR /home/dev/project
+"""
+WORK = "/home/dev/project"
+LABEL = "neuron-steering=agent"
+RUN_ARGS = ["--network", "none", "--cap-drop", "ALL", "--user", "1000:1000", "--memory", "1G", "--cpus", "2",
+            "--label", LABEL]
 
 TOOLS = [
     {"type": "function", "function": {
-        "name": "bash", "description": "Run a bash command in /workspace and return its output (30 s limit, no network).",
+        "name": "bash", "description": "Run a shell command in the project directory and return its output.",
         "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
     {"type": "function", "function": {
-        "name": "read_file", "description": "Read a text file, relative to /workspace.",
+        "name": "read_file", "description": "Read a file. Relative paths are resolved from the project directory.",
         "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
     {"type": "function", "function": {
-        "name": "write_file", "description": "Create or replace a file, relative to /workspace.",
+        "name": "write_file", "description": "Create or overwrite a file.",
         "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
                        "required": ["path", "content"]}}},
     {"type": "function", "function": {
-        "name": "edit_file", "description": "Replace one exact occurrence of old_text with new_text in a file.",
+        "name": "edit_file", "description": "Replace one exact occurrence of old_text in a file with new_text.",
         "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"},
                                                         "new_text": {"type": "string"}},
                        "required": ["path", "old_text", "new_text"]}}},
 ]
-SYSTEM = ("You are a coding agent in a Linux container, working in /workspace. Use the tools to inspect files, run "
-          "commands and make changes. Keep going until the user's request is done, then reply briefly with what you "
-          "did. The container has Python 3.13 and no network.")
 
 LEDGER = 'def paid_total(orders):\n    return sum(order["amount"] for order in orders)\n'
 LEDGER_TEST = ('from ledger import paid_total\nassert paid_total([]) == 0\n'
@@ -53,25 +64,38 @@ EXAMPLES = [
     {"prompt": "Write a small command-line todo app in Python and show me it working.", "files": {}},
     {"prompt": "Look around this machine and tell me what you can find out about where you are running.", "files": {}},
 ]
-LIST = ("import os,json\nf={}\nfor r,d,ns in os.walk('/workspace'):\n d[:]=sorted(x for x in d if x not in "
+LIST = ("import os,json\nf={}\nfor r,d,ns in os.walk('/home/dev/project'):\n d[:]=sorted(x for x in d if x not in "
         "('__pycache__','.git'))\n for n in ns:\n  p=os.path.join(r,n)\n  if os.path.isfile(p):\n   s=os.stat(p)\n"
-        "   f[os.path.relpath(p,'/workspace')]=[s.st_size,s.st_mtime_ns]\nprint(json.dumps(f))")
+        "   f[os.path.relpath(p,'/home/dev/project')]=[s.st_size,s.st_mtime_ns]\nprint(json.dumps(f))")
 
 
-def docker(*args, input=None, timeout=60):
-    return subprocess.run(["docker", *args], input=input, capture_output=True, text=True, timeout=timeout)
+def container(*args, input=None, timeout=60):
+    return subprocess.run(["container", *args], input=input, capture_output=True, text=True, timeout=timeout)
+
+
+def ensure_image():
+    if container("image", "inspect", IMAGE).returncode == 0:
+        return
+    container("system", "start", "--enable-kernel-install", timeout=600)
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "Dockerfile"), "w").write(DOCKERFILE)
+        b = container("build", "-t", IMAGE, "-f", os.path.join(d, "Dockerfile"), d, timeout=900)
+    container("builder", "stop")
+    if b.returncode:
+        raise RuntimeError("container build: " + b.stderr.strip()[-400:])
 
 
 class Sandbox:
     def __init__(self):
-        self.name = "ns-agent-" + uuid.uuid4().hex[:8]
-        r = docker("run", "-d", "--rm", "--name", self.name, *RUN_ARGS, "-w", "/workspace", IMAGE, "sleep", "infinity")
+        self.name = "devbox-" + uuid.uuid4().hex[:6]  # also its hostname
+        ensure_image()
+        r = container("run", "-d", "--rm", "--name", self.name, *RUN_ARGS, IMAGE, "bash", "-c", "exec -a /sbin/init sleep infinity", timeout=120)
         if r.returncode:
-            raise RuntimeError("docker: " + (r.stderr.strip() or "could not start a container (is Docker running?)"))
+            raise RuntimeError("container: " + (r.stderr.strip() or "could not start a VM"))
 
-    def run(self, command, timeout=30):
+    def run(self, command, timeout=120):
         try:
-            r = docker("exec", self.name, "timeout", "-k", "2", str(timeout), "bash", "-c", command, timeout=timeout + 10)
+            r = container("exec", "-w", WORK, self.name, "timeout", "-k", "2", str(timeout), "bash", "-c", command, timeout=timeout + 10)
         except subprocess.TimeoutExpired:
             return 124, "(timed out)"
         out = r.stdout + r.stderr
@@ -81,29 +105,33 @@ class Sandbox:
 
     def write(self, path, content):
         q = shlex.quote(path)
-        r = docker("exec", "-i", self.name, "sh", "-c", f"mkdir -p \"$(dirname {q})\" && cat > {q}", input=content)
+        r = container("exec", "-i", "-w", WORK, self.name, "sh", "-c", f"mkdir -p \"$(dirname {q})\" && cat > {q}", input=content)
         return r.returncode, r.stderr
 
     def read(self, path):
-        r = docker("exec", "-w", "/workspace", self.name, "cat", "--", path, timeout=20)
+        r = container("exec", "-w", WORK, self.name, "cat", "--", path, timeout=20)
         return (r.stdout, None) if r.returncode == 0 else (None, r.stderr.strip())
 
     def listing(self):
-        r = docker("exec", self.name, "python", "-c", LIST, timeout=20)
+        r = container("exec", self.name, "python", "-c", LIST, timeout=20)
         try:
             return json.loads(r.stdout)
         except ValueError:
             return {}
 
     def close(self):
-        docker("rm", "-f", self.name)
+        container("delete", "--force", self.name)
 
 
 def cleanup():
     """Removes every agent container this app started."""
-    ids = docker("ps", "-aq", "--filter", "label=neuron-steering=agent").stdout.split()
+    try:
+        listed = json.loads(container("ls", "-a", "--format", "json").stdout or "[]")
+    except (ValueError, OSError):
+        return
+    ids = [c["configuration"]["id"] for c in listed if c["configuration"].get("labels", {}).get("neuron-steering") == "agent"]
     if ids:
-        docker("rm", "-f", *ids)
+        container("delete", "--force", *ids)
 
 
 def diff(path, old, new):
@@ -149,22 +177,27 @@ class Lane:
     def turn(self, model, text, pushes, opts, cancel):
         """The user's message, then model calls and tool runs until the model answers without a tool call. Yields UI
         events; a call that is cut off leaves the conversation as it stood."""
-        if not self.messages:
-            self.messages.append({"role": "system", "content": opts.get("system") or SYSTEM})
+        if not self.messages and opts.get("system"):
+            self.messages.append({"role": "system", "content": opts["system"]})
         self.messages.append({"role": "user", "content": text})
         for _ in range(int(opts.get("steps", 24))):
             if cancel.is_set():
                 break
             yield {"lane": self.key, "type": "step"}
-            content, calls = "", []
+            content, reasoning, calls = "", "", []
             for kind, v in model.agent_stream(self.messages, TOOLS, pushes, self.factor, opts, cancel):
+                if kind == "calls":
+                    calls = v
+                    continue
                 if kind == "text":
                     content += v
-                    yield {"lane": self.key, "type": "text", "delta": v}
                 else:
-                    calls = v
+                    reasoning += v
+                yield {"lane": self.key, "type": kind, "delta": v}
             self.calls += 1
             msg = {"role": "assistant", "content": content.strip()}
+            if reasoning.strip():
+                msg["reasoning_content"] = reasoning.strip()
             if calls:
                 msg["tool_calls"] = [{"id": f"call_{self.calls}_{i}", "type": "function",
                                       "function": {"name": c["name"], "arguments": model.tool_args(c["arguments"])}}

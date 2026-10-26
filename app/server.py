@@ -143,8 +143,8 @@ def generate(req: dict):
         if m.status() != "ready":
             yield sse({"status": "loading"})
         yield sse({"status": "running"})
-        for col, delta in m.chat(req["convs"], pushes_of(req), req["factors"], req.get("opts", {}), cancel):
-            yield sse({"col": col, "delta": delta})
+        for col, kind, delta in m.chat(req["convs"], pushes_of(req), req["factors"], req.get("opts", {}), cancel):
+            yield sse({"col": col, "kind": kind, "delta": delta})
 
     return stream(work)
 
@@ -187,7 +187,7 @@ def close_session():
 
 @app.get("/api/agent/examples")
 def agent_examples():
-    return {"examples": agent.EXAMPLES, "system": agent.SYSTEM}
+    return {"examples": agent.EXAMPLES}
 
 
 @app.post("/api/agent/new")

@@ -70,19 +70,27 @@ uv run python app/server.py      # http://127.0.0.1:8787
 
 The rail holds the steering stack for the selected model: any layer, expert and neuron at any dose, each push
 switchable, the whole stack behind one switch. Its menu loads saved or example stacks and downloads the stack as a
-llama.cpp control vector. Temperature, reply length and system prompts are under the settings button.
+llama.cpp control vector.
 
-- **Chat** sends each message to every column; a column's glyph is its factor on the stack, and each column continues
-  its own conversation.
 - **Find** ranks neurons three ways: by the tokens their logit lens points to (Words, which also takes an address like
   `L14 E18 N305`), by how far past their usual range they fire on a text, token by token (Text), and by how much more
   they fire on one set of prompts than another (Contrast). The inspector shows a neuron's lens and where it fires, and
   pushes it. On Qwen3.5-4B, Contrast with conspiratorial against neutral sentences puts L19 N7839 (−) and L10 N7757 (+)
   first, neuron-explorer's conspiracy pair.
+- **Chat** sends each message to every column; a column's glyph is its factor on the stack, and each column continues
+  its own conversation.
 - **Agent** is a conversation with a coding agent that has a shell and file tools, steered, unsteered, or both side by
-  side. Each lane works in its own container: Docker Desktop's Linux VM, no network, no mounts, read-only root, all
-  capabilities dropped. Files can be dropped into the workspace, and the ones the agent changes are marked.
+  side. Each lane works in its own Linux virtual machine from Apple's
+  [container](https://github.com/apple/container) (`brew install container`): one VM and kernel per lane, no network
+  interface but loopback, no host mounts, all capabilities dropped. There is no system prompt by default and nothing
+  tells the model it is sandboxed; to it, it is user `dev` with git, curl and Python in `~/project`. Files can be
+  dropped into the workspace, and the ones the agent changes are marked.
 - The book button opens lessons that drive the app step by step.
+
+Replies use the sampling each model card recommends for its thinking state (0.7, top-p 0.8, top-k 20, presence
+penalty 1.5 without thinking; 1.0 and top-p 0.95 with it), or greedy decoding; a seed makes runs repeatable. Thinking
+is off in Chat and on in Agent by default, and the reasoning is shown folded. These and the system prompts are under
+the settings button.
 
 Flash-Next runs in one Strata server started with `STRATA_METAL_CVEC_LIVE` (the vector is re-read from a file, so a
 new stack or dose needs no restart) and `STRATA_METAL_ACTS` (routing and down-projection inputs captured while a

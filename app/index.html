@@ -149,6 +149,12 @@
   .md h4 { font-size: 14.5px; margin: 14px 0 4px; color: var(--text); }
   .md p { margin: 0 0 10px; } .md ul, .md ol { margin: 0 0 10px; padding-left: 20px; }
   .md strong { color: var(--text); }
+  .thought { margin: 4px 0 10px; color: var(--dim); font-size: 13px; }
+  .thought summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 7px; color: var(--faint); }
+  .thought summary::before { content: "›"; font-size: 15px; transition: transform .15s; }
+  .thought[open] summary::before { transform: rotate(90deg); }
+  .thought summary .spin { width: 11px; height: 11px; }
+  .thought div { margin-top: 6px; padding-left: 12px; border-left: 1px solid var(--line2); white-space: pre-wrap; line-height: 1.55; }
   .md blockquote { border-left: 3px solid var(--line2); padding-left: 12px; color: var(--dim); margin: 0 0 10px; }
   .col.p .md strong { color: var(--up); } .col.n .md strong { color: var(--down); }
   .md code { font: 12.5px var(--mono); color: var(--text); background: var(--raise); padding: 1px 4px; border-radius: 4px; }
@@ -249,7 +255,7 @@
 <body>
 <header class="top">
   <button class="modelbtn" id="modelbtn"><span class="led" id="led"></span><span id="mname"></span><span class="caret">▾</span></button>
-  <nav class="tabs" id="tabs"><button data-t="chat">Chat</button><button data-t="find">Find</button><button data-t="agent">Agent</button></nav>
+  <nav class="tabs" id="tabs"><button data-t="find">Find</button><button data-t="chat">Chat</button><button data-t="agent">Agent</button></nav>
   <div class="right">
     <button class="icon" id="setbtn" title="Settings"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
     <button class="icon" id="help" title="Lessons"><svg class="i" viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/></svg></button>
@@ -304,7 +310,7 @@
     <div class="toolbar">
       <div class="seg" id="lanemode"><button data-l="steered">Steered</button><button data-l="compare">Compare</button><button data-l="plain">Unsteered</button></div>
       <div class="grow"></div>
-      <span class="badge" title="Each lane runs in its own container in Docker Desktop's Linux VM: no network, no host files, read-only system, no capabilities."><svg class="i" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Sandbox · no network</span>
+      <span class="badge" title="Each lane runs in its own Linux virtual machine (Apple Virtualization): no network, no host files, no capabilities. The agent is not told."><svg class="i" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>VM per lane · no network</span>
       <button class="btn" id="anew">New session</button>
     </div>
     <div class="agentbody">
@@ -321,7 +327,7 @@
       <div class="workspace">
         <div class="wshead">
           <div class="seg" id="wslane" hidden></div>
-          <span class="mono" style="font-size:12px;color:var(--dim)" id="wstitle">/workspace</span>
+          <span class="mono" style="font-size:12px;color:var(--dim)" id="wstitle">~/project</span>
           <button class="mini" id="upload" title="Add files"><svg class="i" viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg></button>
           <input type="file" id="picker" multiple hidden>
         </div>
@@ -351,9 +357,9 @@ const state = {
   model: "flash", tab: "chat", fmode: "words", steer: true,
   stacks: { small: [], flash: [] }, saved: { small: {}, flash: {} }, factors: { small: [-1, 0, 1], flash: [0, 1] },
   q: "", ftext: "", fa: "", fb: "", lanes: "compare",
-  opts: { temperature: 0, max_tokens: 400, system: "", agent_system: "", steps: 24 },
+  opts: { sampling: "card", seed: "", max_tokens: 4096, chat_thinking: false, agent_thinking: true, system: "", agent_system: "", steps: 40 },
 };
-try { const s = JSON.parse(localStorage.getItem("ns3")); if (s) for (const k in state) if (k in s) state[k] = s[k]; } catch {}
+try { const s = JSON.parse(localStorage.getItem("ns3")); if (s) for (const k in state) if (k in s && (k !== "opts" || s.opts.sampling)) state[k] = s[k]; } catch {}
 const save = () => { try { localStorage.setItem("ns3", JSON.stringify(state)); } catch {} };
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html !== undefined) e.innerHTML = html; return e; };
@@ -374,6 +380,7 @@ const ICON = {
   eye: '<svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg>',
 };
 
+const thoughtHTML = (t, live) => `<details class="thought"><summary>${live ? '<span class="spin"></span>Thinking' : "Thought"}</summary><div>${esc(t.trim())}</div></details>`;
 function toast(msg, kind = "") {
   const t = el("div", "toast " + kind, esc(msg)); $("toasts").append(t);
   setTimeout(() => t.remove(), kind === "info" ? 3000 : 7000);
@@ -547,14 +554,21 @@ $("libbtn").onclick = () => openPop($("libbtn"), (p) => {
 $("setbtn").onclick = () => openPop($("setbtn"), (p) => {
   p.classList.add("settings"); const o = state.opts;
   p.innerHTML = `
-    <label class="field"><span>Temperature <b id="tv">${o.temperature}</b></span><input type="range" id="st" min="0" max="1.5" step="0.05" value="${o.temperature}"></label>
-    <label class="field"><span>Reply length <b id="mv">${o.max_tokens}</b></span><input type="range" id="sm" min="64" max="2048" step="32" value="${o.max_tokens}"></label>
+    <div class="field"><span>Sampling</span><div class="seg" id="ssamp"><button data-v="card">Model card</button><button data-v="greedy">Greedy</button></div></div>
+    <label class="field"><span>Seed</span><input class="text" id="sseed" placeholder="Random" value="${esc(o.seed)}" inputmode="numeric"></label>
+    <div class="field"><span>Thinking</span><div class="seg" id="sthink"><button data-v="chat_thinking">Chat</button><button data-v="agent_thinking">Agent</button></div></div>
+    <label class="field"><span>Max tokens per reply <b id="mv">${o.max_tokens}</b></span><input type="range" id="sm" min="256" max="16384" step="256" value="${o.max_tokens}"></label>
     <label class="field"><span>Chat system prompt</span><textarea class="text" id="ss" rows="3" placeholder="None">${esc(o.system)}</textarea></label>
-    <label class="field"><span>Agent system prompt</span><textarea class="text" id="sa" rows="4" placeholder="${esc(agentDefault)}">${esc(o.agent_system)}</textarea></label>
-    <label class="field"><span>Agent steps per message <b id="pv">${o.steps}</b></span><input type="range" id="sp" min="4" max="60" step="1" value="${o.steps}"></label>`;
+    <label class="field"><span>Agent system prompt</span><textarea class="text" id="sa" rows="3" placeholder="None">${esc(o.agent_system)}</textarea></label>
+    <label class="field"><span>Agent steps per message <b id="pv">${o.steps}</b></span><input type="range" id="sp" min="4" max="100" step="1" value="${o.steps}"></label>`;
   const bind = (id, key, show, conv = (v) => v) => { const x = p.querySelector("#" + id); x.oninput = () => { o[key] = conv(x.value); if (show) p.querySelector("#" + show).textContent = o[key]; save(); }; };
-  bind("st", "temperature", "tv", parseFloat); bind("sm", "max_tokens", "mv", parseInt); bind("sp", "steps", "pv", parseInt);
+  bind("sm", "max_tokens", "mv", parseInt); bind("sp", "steps", "pv", parseInt); bind("sseed", "seed");
   bind("ss", "system"); bind("sa", "agent_system");
+  const samp = p.querySelector("#ssamp"), think = p.querySelector("#sthink");
+  const paint = () => { for (const b of samp.children) b.classList.toggle("on", b.dataset.v === o.sampling); for (const b of think.children) b.classList.toggle("on", !!o[b.dataset.v]); };
+  for (const b of samp.children) b.onclick = () => { o.sampling = b.dataset.v; save(); paint(); };
+  for (const b of think.children) b.onclick = () => { o[b.dataset.v] = !o[b.dataset.v]; save(); paint(); };
+  paint();
 }, "right");
 
 // ============================================================ tabs
@@ -595,9 +609,11 @@ function renderCols() {
 function paintCol(i, live) {
   const col = $("cols").children[i]; if (!col) return;
   const sc = col.querySelector(".scroll"), stick = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 40;
+  const open = new Set([...sc.querySelectorAll("details[open]")].map((d) => d.dataset.k));
   sc.innerHTML = convs[i].map((m, j) => m.role === "user" ? `<div class="msg-user"><div>${esc(m.content)}</div></div>`
-    : `<div class="md">${md(m.content)}${live && j === convs[i].length - 1 ? '<span class="cursor"></span>' : ""}</div>`).join("") ||
+    : `${m.think ? thoughtHTML(m.think, live && j === convs[i].length - 1 && !m.content) : ""}<div class="md">${md(m.content)}${live && j === convs[i].length - 1 ? '<span class="cursor"></span>' : ""}</div>`).join("") ||
     (i === 0 && !pushes().length ? `<div class="empty">Every column gets your message.<br>Its glyph is the dose factor on the steering stack.</div>` : "");
+  sc.querySelectorAll("details").forEach((d, n) => { d.dataset.k = n; if (open.has(String(n))) d.open = true; });
   if (stick) sc.scrollTop = sc.scrollHeight;
 }
 async function sendChat() {
@@ -609,11 +625,11 @@ async function sendChat() {
   $("csuggest").hidden = true;
   setJob("chat"); fs.forEach((_, i) => paintCol(i, true));
   const sys = state.opts.system.trim();
-  const body = { model: state.model, factors: fs, pushes: pushes(), opts: state.opts,
+  const body = { model: state.model, factors: fs, pushes: pushes(), opts: { ...state.opts, thinking: state.opts.chat_thinking },
                  convs: convs.map((c) => [...(sys ? [{ role: "system", content: sys }] : []), ...c.slice(0, -1)]) };
   try {
     await sse("/api/generate", body, (ev) => {
-      if (ev.col !== undefined) { const c = convs[ev.col]; c[c.length - 1].content += ev.delta; paintCol(ev.col, true); }
+      if (ev.col !== undefined) { const m = convs[ev.col].at(-1); if (ev.kind === "think") m.think = (m.think || "") + ev.delta; else m.content += ev.delta; paintCol(ev.col, true); }
     });
   } catch (e) { toast(String(e)); }
   setJob(null); fs.forEach((_, i) => paintCol(i));
@@ -715,7 +731,7 @@ async function renderInspector() {
 }
 
 // ============================================================ Agent
-let examples = [], agentDefault = "", session = null, lanesEv = {}, laneFiles = {}, touched = {}, wsLane = null, viewing = null;
+let examples = [], session = null, lanesEv = {}, laneFiles = {}, touched = {}, wsLane = null, viewing = null;
 const laneSpec = () => ({ steered: { steered: 1 }, compare: { steered: 1, plain: 0 }, plain: { plain: 0 } })[state.lanes];
 for (const b of $("lanemode").children) b.onclick = () => { if (job) return; state.lanes = b.dataset.l; save(); dropSession(); renderLanes(); };
 function dropSession() { session = null; lanesEv = {}; laneFiles = {}; touched = {}; viewing = null; renderLanes(); }
@@ -760,6 +776,7 @@ async function putFiles(files) {
   renderTree();
 }
 function evHTML(e) {
+  if (e.type === "think") return e.text.trim() ? thoughtHTML(e.text, !e.closed && job === "agent") : "";
   if (e.type === "user") return `<div class="msg-user"><div>${esc(e.text)}</div></div>`;
   if (e.type === "text") { const t = e.text.replace(/<think>[\s\S]*?(<\/think>|$)/g, "").trim(); return t ? `<div class="md">${md(t)}</div>` : ""; }
   if (e.type === "tool") {
@@ -784,9 +801,11 @@ function paintLane(k) {
   const lane = [...$("lanes").children].find((x) => x.dataset.k === k); if (!lane) return;
   const sc = lane.querySelector(".scroll"), stick = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 60;
   const evs = lanesEv[k] || [];
+  const open = new Set([...sc.querySelectorAll("details[open]")].map((d) => d.dataset.k));
   const first = $("lanes").firstElementChild === lane;
-  sc.innerHTML = evs.map(evHTML).join("") + (job === "agent" && laneBusy[k] ? `<div class="working"><span class="spin"></span>Working</div>` : "") ||
-    (first ? `<div class="empty">A coding agent with a shell and file tools,<br>each lane in its own Linux container with no network.</div>` : "");
+  sc.innerHTML = evs.map(evHTML).join("") + (job === "agent" && laneBusy[k] && (evs.at(-1)?.closed ?? true) ? `<div class="working"><span class="spin"></span>Working</div>` : "") ||
+    (first ? `<div class="empty">A coding agent with a shell and file tools,<br>each lane in its own Linux VM with no network.</div>` : "");
+  sc.querySelectorAll("details").forEach((d, n) => { d.dataset.k = n; if (open.has(String(n))) d.open = true; });
   sc.querySelectorAll(".tool").forEach((t) => t.onclick = () => { const e = evs.find((x) => x.id === t.dataset.id); if (e) { e.open = !e.open; paintLane(k); } });
   if (stick) sc.scrollTop = sc.scrollHeight;
 }
@@ -798,14 +817,15 @@ async function sendAgent() {
   if (!(await ensureSession())) return setJob(null);
   $("ainput").value = ""; autosize($("ainput")); $("asuggest").hidden = true;
   for (const k of session.lanes) { lanesEv[k].push({ type: "user", text }); laneBusy[k] = true; paintLane(k); }
-  const opts = { ...state.opts, system: state.opts.agent_system.trim() || agentDefault, max_tokens: Math.max(state.opts.max_tokens, 1024) };
+  const opts = { ...state.opts, system: state.opts.agent_system.trim(), thinking: state.opts.agent_thinking };
   try {
     await sse("/api/agent/send", { text, pushes: pushes(), opts }, (ev) => {
       const k = ev.lane; if (k === undefined) return;
       const evs = lanesEv[k], last = evs[evs.length - 1];
-      if (ev.type === "text") { if (last?.type === "text" && !last.closed) last.text += ev.delta; else evs.push({ type: "text", text: ev.delta }); }
-      else if (ev.type === "step" && last?.type === "text") last.closed = true;
-      else if (ev.type === "tool") { if (last?.type === "text") last.closed = true; evs.push({ ...ev }); }
+      if (ev.type === "text" || ev.type === "think") {
+        if (last?.type === ev.type && !last.closed) last.text += ev.delta; else { if (last) last.closed = true; evs.push({ type: ev.type, text: ev.delta }); }
+      } else if (ev.type === "step" && last) last.closed = true;
+      else if (ev.type === "tool") { if (last) last.closed = true; evs.push({ ...ev }); }
       else if (ev.type === "result") {
         const t = evs.find((x) => x.id === ev.id); if (t) t.result = ev;
         laneFiles[k] = ev.files; for (const f of ev.changed) touched[k][f] = true; if (k === wsLane) { renderTree(); if (viewing && ev.changed.includes(viewing)) view(viewing); }
@@ -878,7 +898,7 @@ const LESSONS = [
       act: () => { setModel("small"); setTab("find"); setFMode("contrast"); $("fa").value = CONSP_A; $("fb").value = CONSP_B; $("fcontrast").requestSubmit(); } },
   ] },
   { title: "A steered agent", sub: "The same request, two sandboxes", steps: [
-    { text: "<b>Agent</b> is a conversation with a model that has a shell and file tools, in a fresh Linux container per lane (Docker's VM, no network, no host files). <b>Compare</b> runs a steered and an unsteered lane side by side.",
+    { text: "<b>Agent</b> is a conversation with a model that has a shell and file tools, each lane in a fresh Linux virtual machine with no network and no host files. Nothing tells it so: to the model it is user <code>dev</code> in <code>~/project</code>. <b>Compare</b> runs a steered and an unsteered lane side by side.",
       act: () => { setTab("agent"); state.lanes = "compare"; dropSession(); } },
     { text: "Pick an example or write your own request. Files the agent changes are marked in the workspace; click one to read it, a tool row to expand it. Keep talking to it as you would to any coding agent.",
       act: () => useExample(examples[1]) },
@@ -913,7 +933,7 @@ $("lback").onclick = () => { lesson = -1; renderLearn(); };
 $("q").value = state.q; $("ftextin").value = state.ftext; $("fa").value = state.fa; $("fb").value = state.fb;
 if (!state.stacks.flash.length && !localStorage.getItem("ns3")) state.stacks.flash = [{ layer: 14, expert: "18", neuron: 305, dose: 10, on: true }];
 paintSend(); setFMode(state.fmode); setModel(state.model); setTab(state.tab); poll();
-get("/api/agent/examples").then((r) => { examples = r.examples; agentDefault = r.system; renderLanes(); });
+get("/api/agent/examples").then((r) => { examples = r.examples; renderLanes(); });
 </script>
 </body>
 </html>
