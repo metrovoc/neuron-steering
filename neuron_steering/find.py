@@ -1,4 +1,4 @@
-"""Find character neurons in Qwen3.5-4B, beyond word search.
+"""Find character neurons in Qwen3.5-4B (and, for contrast and steer, Qwen3.8-Flash-Next), beyond word search.
 
     python -m neuron_steering.find concept "QUERY" ...          neuron poles whose steer lens means the query (any language)
     python -m neuron_steering.find contrast "a pirate" ...      neurons a character system prompt moves at the start of the reply
@@ -13,6 +13,9 @@ that half the model pushes (作为, 您的, 无法) count for little. The first 
 context) with the system prompt "You are X. Stay in character in every reply." against "You are a helpful assistant."
 over twelve user turns, scaled by the spread across turns, so it finds neurons the character moves consistently.
 Given several characters, it reports what they share (playing any role) first and ranks each one without it.
+`--model flash` reads Qwen3.8-Flash-Next through the GUI's Strata server (STRATA_METAL_ACTS) and ranks the shared
+expert's neurons and those of routed experts the character recruits; `steer --model flash` steers through
+STRATA_METAL_CVEC_LIVE. Flash-Next pushes are [layer, neuron, dose, expert] (expert null for the shared expert).
 
 `steer` ranks stacks by how far the replies move from the unsteered ones (embedding distance), minus repetition,
 plus how much more alike the four replies become (a character that carries across prompts). The JSON is a list of
@@ -129,44 +132,181 @@ def load_model():
     return tok, m, m.model.language_model
 
 
-def contrast(a):
-    tok, m, lm = load_model()
-    sc, st = npz("act_scale.npz"), npz("steer_index.npz")
-    seen = {}
-    for l, layer in enumerate(lm.layers):
-        layer.mlp.down_proj.register_forward_pre_hook(
-            lambda mod, x, l=l: seen.__setitem__(l, x[0][0, -3:].float().mean(0).cpu().numpy()))
+class Small4B:
+    """Qwen3.5-4B in transformers: activations at the reply's start, and batched steering with per-row vectors."""
+    name, dose = "Qwen3.5-4B", 1.0
 
-    def acts(system):
-        out = []
-        for u in USERS:
-            ids = tok.apply_chat_template([{"role": "system", "content": system}, {"role": "user", "content": u}],
-                                          add_generation_prompt=True, enable_thinking=False, return_tensors="pt",
-                                          return_dict=True)["input_ids"]
+    def __init__(self):
+        self.tok, self.m, self.lm = load_model()
+        self.st = npz("steer_index.npz")
+        sc = npz("act_scale.npz")
+        self.scale = np.maximum(np.maximum(sc["pos"], -sc["neg"]), 1e-3)  # [L, N]
+        self.seen = None  # a dict while acts() reads a prompt
+        for l, layer in enumerate(self.lm.layers):
+            layer.mlp.down_proj.register_forward_pre_hook(lambda mod, x, l=l: None if self.seen is None else
+                                                          self.seen.__setitem__(l, x[0][0, -3:].float().mean(0).cpu().numpy()))
+
+    def acts(self, messages):
+        ids = self.tok.apply_chat_template(messages, add_generation_prompt=True, enable_thinking=False,
+                                           return_tensors="pt", return_dict=True)["input_ids"]
+        self.seen = {}
+        with torch.inference_mode():
+            self.lm(input_ids=ids.to(DEV), use_cache=False)
+        x, self.seen = np.stack([self.seen[l] for l in range(len(self.lm.layers))]), None
+        return x
+
+    def describe(self, idx, sign):
+        l, n = idx
+        return [int(l), int(n)], f"L{l}N{n}", words(self.st["up" if sign > 0 else "down"][l, n])
+
+    def replies(self, cfgs, prompts, max_tokens, batch):
+        """Every stack's replies, generated together: each batch row carries its own added vectors."""
+        from neuron_steering import ncvec
+        tok, m, lm = self.tok, self.m, self.lm
+        p50 = ncvec.resid_p50(MODEL, range(len(lm.layers)))
+        add = {}
+        hooks = [layer.register_forward_hook(lambda mod, x, o, l=l: None if l not in add else
+                                             ((o[0] + add[l], *o[1:]) if isinstance(o, tuple) else o + add[l]))
+                 for l, layer in enumerate(lm.layers)]
+        D = lm.config.hidden_size
+        text = [tok.apply_chat_template([{"role": "user", "content": p}], tokenize=False, add_generation_prompt=True,
+                                        enable_thinking=False) for p in prompts]
+        rows = []
+        for i in range(0, len(cfgs), batch):
+            chunk = cfgs[i:i + batch]
+            add.clear()
+            for c_i, c in enumerate(chunk):
+                for l, n, dose in c["pushes"]:
+                    w = lm.layers[l].mlp.down_proj.weight[:, n].float()
+                    add.setdefault(l, torch.zeros(len(chunk) * len(prompts), 1, D, device=DEV))
+                    add[l][c_i * len(prompts):(c_i + 1) * len(prompts), 0] += dose * p50[l] * w / w.norm()
+            for l in add:
+                add[l] = add[l].to(torch.bfloat16)
+            b = tok(text * len(chunk), return_tensors="pt", padding=True).to(DEV)
             with torch.inference_mode():
-                lm(input_ids=ids.to(DEV), use_cache=False)
-            out.append(np.stack([seen[l] for l in range(len(lm.layers))]))
-        return np.stack(out)
+                o = m.generate(**b, max_new_tokens=max_tokens, do_sample=False, repetition_penalty=1.1)
+            for c_i, c in enumerate(chunk):
+                rows.append({**c, "replies": [tok.decode(x[b.input_ids.shape[1]:], skip_special_tokens=True).strip()
+                                              for x in o[c_i * len(prompts):(c_i + 1) * len(prompts)]]})
+            print(f"{len(rows)}/{len(cfgs)}", file=sys.stderr, flush=True)
+        for h in hooks:
+            h.remove()
+        del self.m, self.lm
+        return rows
 
-    scale = np.maximum(np.maximum(sc["pos"], -sc["neg"]), 1e-3)
-    base = acts("You are a helpful assistant.")
-    lo, hi = map(int, a.layers.split("-"))
-    deltas = {p: acts(f"You are {p}. Stay in character in every reply.") - base for p in a.persona}
+
+class Flash:
+    """Qwen3.8-Flash-Next in the GUI's Strata server (port 8090, STRATA_METAL_ACTS and STRATA_METAL_CVEC_LIVE),
+    started if it is not running. Units are [layer, expert, neuron] with expert 512 the shared expert."""
+    name, dose = "Qwen3.8-Flash-Next", 6.0
+
+    def __init__(self):
+        sys.path.insert(0, ROOT)
+        from app.models import Flash as Backend
+        from neuron_steering import acts
+        self.fl, self.capture = Backend(), acts.capture
+        self.fl.ensure()
+        self.scale = self.fl.scale()  # [48, 513, 640]
+
+    def acts(self, messages):
+        from app.models import STRATA_PORT
+        tok = self.fl.tokenizer()
+        T = len(tok(tok.apply_chat_template(messages, add_generation_prompt=True, enable_thinking=False, tokenize=False),
+                    add_special_tokens=False).input_ids)
+        with self.fl.lock:
+            cap = self.capture(STRATA_PORT, self.fl.acts_file, messages)
+        ps = [p for p in range(T - 3, T) if p in cap.ids]
+        if not ps:
+            raise RuntimeError("the engine reused its cache for the reply's start; nothing was captured")
+        x = np.zeros((48, 513, 640), np.float32)
+        self.routed = np.zeros((48, 513), np.float32)
+        self.routed[:, 512] = 1
+        layers = np.arange(48)[:, None]
+        for p in ps:
+            x[:, 512] += cap.hs[p]
+            x[layers, cap.ids[p]] += cap.h[p]
+            self.routed[layers, cap.ids[p]] += 1 / len(ps)
+        return x / len(ps)
+
+    def describe(self, idx, sign):
+        l, e, n = map(int, idx)
+        expert = None if e == 512 else str(e)
+        lens = self.fl.lens(l, n, expert, k=8)["up" if sign > 0 else "down"]
+        return [l, n, expert], f"L{l}{'S' if expert is None else 'E' + expert}N{n}", lens
+
+    def replies(self, cfgs, prompts, max_tokens):
+        """One live vector per stack; the GUI's vector file is put back afterwards."""
+        live = open(self.fl.live, "rb").read() if os.path.exists(self.fl.live) else None
+        rows = []
+        try:
+            for c in cfgs:
+                pushes = [{"layer": l, "neuron": n, "dose": d, "expert": e} for l, n, d, *rest in c["pushes"]
+                          for e in [rest[0] if rest else None]]
+                if pushes:
+                    self.fl.write_live(self.fl.vector(pushes))
+                out = []
+                for p in prompts:
+                    body = {"model": "x", "messages": [{"role": "user", "content": p}], "temperature": 0,
+                            "max_tokens": max_tokens, "chat_template_kwargs": {"enable_thinking": False},
+                            "experimental_speed_projection": bool(pushes)}
+                    with self.fl.lock, self.fl.request(body) as res:
+                        msg = json.load(res)["choices"][0]["message"]
+                        out.append((msg.get("content") or msg.get("reasoning_content") or "").strip())
+                rows.append({**c, "replies": out})
+                print(f"{len(rows)}/{len(cfgs)}", file=sys.stderr, flush=True)
+        finally:
+            if live is not None:
+                with open(self.fl.live + ".tmp", "wb") as f:
+                    f.write(live)
+                os.replace(self.fl.live + ".tmp", self.fl.live)
+        return rows
+
+
+def contrast(a):
+    model = Flash() if a.model == "flash" else Small4B()
+    dose = a.dose or model.dose
+
+    def read(system, u):
+        x = model.acts([{"role": "system", "content": system}, {"role": "user", "content": u}])
+        return x, getattr(model, "routed", None)
+
+    def stats(system):
+        """Mean and spread over the user turns of the change from the plain assistant, accumulated turn by turn
+        (a Flash-Next activation set is 63 MB), and for an MoE how much more often each expert is routed."""
+        s1 = s2 = r = 0
+        for u, (b, rb) in zip(USERS, base):
+            x, rx = read(system, u)
+            d = x - b
+            s1, s2 = s1 + d, s2 + d * d
+            if rx is not None:
+                r = r + (rx - rb) / len(USERS)
+        m = s1 / len(USERS)
+        return m, np.sqrt(np.maximum(s2 / len(USERS) - m * m, 0)), r
+
+    base = [read("You are a helpful assistant.", u) for u in USERS]
+    per = {p: stats(f"You are {p}. Stay in character in every reply.") for p in a.persona}
+    lo, hi = map(int, (a.layers or ("6-35" if a.model == "flash" else "4-23")).split("-"))
     # with several characters, what they all share (playing any role) is reported once and taken out of each
-    shared = np.mean(list(deltas.values()), 0) if len(deltas) > 1 else 0
-    groups = [("any of these characters", np.mean(list(deltas.values()), 0))] if len(deltas) > 1 else []
-    groups += [(p, d - shared) for p, d in deltas.items()]
+    shared = np.mean([m for m, _, _ in per.values()], 0) if len(per) > 1 else 0
+    groups = [("any of these characters", shared, np.mean([s for _, s, _ in per.values()], 0),
+               np.mean([r for _, _, r in per.values()], 0))] if len(per) > 1 else []
+    groups += [(p, m - shared, s, r) for p, (m, s, r) in per.items()]
     cands = []
-    for p, d in groups:
-        z = d.mean(0) / (d.std(0) + 0.05 * scale)
+    for p, m, s, r in groups:
+        z = m / (s + 0.05 * model.scale)
+        if np.ndim(r):
+            # a routed expert that the character switches on or off moves its neurons the most, but a push cannot
+            # switch an expert; rank the shared expert, and routed neurons only in experts the character recruits
+            z *= ((r >= a.recruit) | (np.arange(z.shape[1]) == 512))[..., None]
         z[:lo] = z[hi + 1:] = 0
         print(f"\n## {p}")
         for i in np.argsort(-np.abs(z), axis=None)[:a.k]:
-            l, n = map(int, np.unravel_index(i, z.shape))
-            sign = 1 if z[l, n] > 0 else -1
-            side = "up" if sign > 0 else "down"
-            print(f"L{l}N{n}{'+' if sign > 0 else '-'} z {z[l, n]:+.1f} {words(st[side][l, n])}")
-            cands.append({"name": f"{p}: L{l}N{n}{'+' if sign > 0 else '-'}", "pushes": [[l, n, sign * a.dose]]})
+            idx = np.unravel_index(i, z.shape)
+            sign = 1 if z[idx] > 0 else -1
+            unit, label, lens = model.describe(idx, sign)
+            print(f"{label}{'+' if sign > 0 else '-'} z {z[idx]:+.1f} {lens}")
+            push = unit[:2] + [sign * dose] + unit[2:]
+            cands.append({"name": f"{p}: {label}{'+' if sign > 0 else '-'}", "pushes": [push]})
     if a.out:
         json.dump(cands, open(a.out, "w"), indent=1, ensure_ascii=False)
 
@@ -183,62 +323,47 @@ def hub(a):
 
 
 def repetition(t):
-    w = re.findall(r"\w+", t.lower())
+    """Share of repeated word trigrams; a reply with fewer than eight words (empty, digits, symbols) counts as 1."""
+    w = re.findall(r"[^\W\d_]+", t.lower())
+    if len(w) < 8:
+        return 1.0
     g = list(zip(w, w[1:], w[2:]))
-    return 1 - len(set(g)) / len(g) if g else 0.0
+    return 1 - len(set(g)) / len(g)
 
 
 def steer(a):
-    """Every stack's replies to PROMPTS, generated together: each batch row carries its own added vectors."""
-
-    from neuron_steering import ncvec
     cfgs = [{"name": "unsteered", "pushes": []}] + json.load(open(a.candidates))
-    tok, m, lm = load_model()
-    p50 = ncvec.resid_p50(MODEL, range(len(lm.layers)))
-    add = {}
-    for l, layer in enumerate(lm.layers):
-        layer.register_forward_hook(lambda mod, x, o, l=l: None if l not in add else
-                                    ((o[0] + add[l], *o[1:]) if isinstance(o, tuple) else o + add[l]))
-    D = lm.config.hidden_size
-    text = [tok.apply_chat_template([{"role": "user", "content": p}], tokenize=False, add_generation_prompt=True,
-                                    enable_thinking=False) for p in PROMPTS]
-    rows = []
-    for i in range(0, len(cfgs), a.batch):
-        chunk = cfgs[i:i + a.batch]
-        add.clear()
-        for c_i, c in enumerate(chunk):
-            for l, n, dose in c["pushes"]:
-                w = lm.layers[l].mlp.down_proj.weight[:, n].float()
-                add.setdefault(l, torch.zeros(len(chunk) * len(PROMPTS), 1, D, device=DEV))
-                add[l][c_i * len(PROMPTS):(c_i + 1) * len(PROMPTS), 0] += dose * p50[l] * w / w.norm()
-        for l in add:
-            add[l] = add[l].to(torch.bfloat16)
-        b = tok(text * len(chunk), return_tensors="pt", padding=True).to(DEV)
-        with torch.inference_mode():
-            o = m.generate(**b, max_new_tokens=a.max_tokens, do_sample=False, repetition_penalty=1.1)
-        for c_i, c in enumerate(chunk):
-            rows.append({**c, "replies": [tok.decode(x[b.input_ids.shape[1]:], skip_special_tokens=True).strip()
-                                          for x in o[c_i * len(PROMPTS):(c_i + 1) * len(PROMPTS)]]})
-        print(f"{len(rows)}/{len(cfgs)}", file=sys.stderr, flush=True)
-    add.clear()
-    del m, lm
+    if a.model == "flash":
+        rows = Flash().replies(cfgs, PROMPTS, a.max_tokens)
+    else:
+        rows = Small4B().replies(cfgs, PROMPTS, a.max_tokens, a.batch)
+    rank(rows, a.out or os.path.splitext(a.candidates)[0] + ".steered.json", a.show)
+
+
+def rank(rows, out, show):
+    """rows[0] is unsteered. Score each stack against it, sort, save and print the best."""
     emb = Embedder()
-    X = emb([t for r in rows for t in r["replies"]]).reshape(len(rows), len(PROMPTS), -1)
+    X = emb([t or " " for r in rows for t in r["replies"]]).reshape(len(rows), len(PROMPTS), -1)
     pair = np.triu_indices(len(PROMPTS), 1)
     alike = lambda x: float((x @ x.T)[pair].mean())
     for r, x in zip(rows, X):
         r["drift"] = 1 - float((x * X[0]).sum(1).mean())
         r["alike"] = alike(x) - alike(X[0])
         r["repetition"] = float(np.mean([repetition(t) for t in r["replies"]]))
-        r["score"] = r["drift"] * (1 - 2 * r["repetition"]) + 0.5 * max(r["alike"], 0)
+        r["score"] = r["drift"] * (1 - 2 * r["repetition"]) + 0.5 * max(r["alike"], 0) * (1 - r["repetition"])
     rows[1:] = sorted(rows[1:], key=lambda r: -r["score"])
-    out = a.out or os.path.splitext(a.candidates)[0] + ".steered.json"
     json.dump(rows, open(out, "w"), indent=1, ensure_ascii=False)
-    for r in rows[:a.show + 1]:
+    for r in rows[:show + 1]:
         print(f"\n== {r['name']} {r['pushes']} score {r.get('score', 0):.2f} drift {r.get('drift', 0):.2f} "
               f"alike {r.get('alike', 0):+.2f} repetition {r.get('repetition', 0):.2f}")
         for t in r["replies"]:
             print("  -", t[:200].replace("\n", " "))
+
+
+def score(a):
+    rows = json.load(open(a.steered))
+    rows = [next(r for r in rows if not r["pushes"])] + [r for r in rows if r["pushes"]]
+    rank(rows, a.steered, a.show)
 
 
 def main():
@@ -253,8 +378,11 @@ def main():
     p = sub.add_parser("contrast")
     p.add_argument("persona", nargs="+", help='completes "You are ...", e.g. "a pirate"')
     p.add_argument("-k", type=int, default=12)
-    p.add_argument("--layers", default="4-23")
-    p.add_argument("--dose", type=float, default=1.0)
+    p.add_argument("--model", choices=("4b", "flash"), default="4b")
+    p.add_argument("--layers", default=None, help="first-last layer to rank (default 4-23 for 4B, 6-35 for Flash-Next)")
+    p.add_argument("--dose", type=float, help="dose written to the candidates (default 1 for 4B, 6 for Flash-Next)")
+    p.add_argument("--recruit", type=float, default=0.5,
+                   help="Flash-Next: rank a routed expert's neurons when the character routes to it this much more often")
     p.add_argument("-o", "--out")
     h = sub.add_parser("hub")
     h.add_argument("layer", type=int)
@@ -262,12 +390,16 @@ def main():
     h.add_argument("-k", type=int, default=16)
     s = sub.add_parser("steer")
     s.add_argument("candidates")
+    s.add_argument("--model", choices=("4b", "flash"), default="4b")
     s.add_argument("--batch", type=int, default=8, help="stacks generated together")
     s.add_argument("--max-tokens", type=int, default=80)
     s.add_argument("--show", type=int, default=20)
     s.add_argument("-o", "--out")
+    r = sub.add_parser("score", help="re-rank a steered JSON written by steer")
+    r.add_argument("steered")
+    r.add_argument("--show", type=int, default=20)
     a = ap.parse_args()
-    {"concept": concept, "contrast": contrast, "hub": hub, "steer": steer}[a.cmd](a)
+    {"concept": concept, "contrast": contrast, "hub": hub, "steer": steer, "score": score}[a.cmd](a)
 
 
 if __name__ == "__main__":

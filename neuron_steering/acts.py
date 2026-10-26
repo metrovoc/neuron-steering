@@ -64,12 +64,14 @@ class Capture:
 
 
 def capture(port, path, prompt, max_tokens=1):
-    """Runs prompt through the server with the capture on (and its reply, max_tokens) and returns the Capture. The
-    engine reuses a cached prefix, so positions it did not recompute are missing (Capture.positions shows which are
-    there); while it decodes, a draft it rejects is captured at that position first."""
+    """Runs prompt (a user message, or a list of chat messages) through the server with the capture on (and its reply,
+    max_tokens) and returns the Capture. The engine reuses a cached prefix, so positions it did not recompute are
+    missing (Capture.positions shows which are there); while it decodes, a draft it rejects is captured at that
+    position first."""
     open(path, "wb").close()
     try:
-        body = {"model": "x", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": max_tokens,
+        messages = prompt if isinstance(prompt, list) else [{"role": "user", "content": prompt}]
+        body = {"model": "x", "messages": messages, "temperature": 0, "max_tokens": max_tokens,
                 "chat_template_kwargs": {"enable_thinking": False}, "experimental_speed_projection": False,
                 "strata_checkpoint": False}
         url = f"http://127.0.0.1:{port}/v1/chat/completions"

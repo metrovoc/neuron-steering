@@ -42,6 +42,38 @@ every list. Given several characters, `contrast` reports that shared set once an
 mean of the others, which brings out the specific ones: for "a grumpy old man", L20 N5143− (Fine, resigned), L22
 N5180− (reckon, 大伙, 自个: folksy speech) and L18 N5897+ (why, 到底, who).
 
+### On Qwen3.8-Flash-Next
+
+`--model flash` runs the same contrast through the GUI's Strata server (started if needed), reading activations with
+`STRATA_METAL_ACTS`; `steer --model flash` writes each stack to the live vector file (`STRATA_METAL_CVEC_LIVE`) and
+puts the GUI's vector back afterwards.
+
+```sh
+uv run python -m neuron_steering.find contrast --model flash "a grumpy old man" "a pirate" -o out/flash-cands.json
+uv run python -m neuron_steering.find steer --model flash out/flash-cands.json
+```
+
+In a mixture of experts the plain contrast is dominated by routing: an expert that the assistant always uses at the
+reply's start and a character never does (L31 expert 409, for five of six characters) moves all its neurons from
+their working range to zero. A push cannot switch an expert, so `contrast` ranks the shared expert's neurons, and
+routed neurons only in experts the character routes to at least half as often again as the plain assistant
+(`--recruit`). Characters recruit few experts at the reply's start: L35 expert 364 for the grumpy old man, the sarcastic
+teenager, the conspiracy theorist and the salesman; L35 expert 249 for the pirate; L31 expert 173 and L32 expert 480
+for the Zen monk.
+
+Steering the top three neurons of each list at doses 6 and 12 through the live vector (greedy, the four prompts):
+dose 12 broke nearly every routed neuron into empty replies, digits or loops, and dose 6 left most of them mild.
+Two characters came through, both recruited rather than literal:
+
+| Push | Found as | What the model becomes |
+| --- | --- | --- |
+| L32 expert 480 N552 +6 | recruited by the Zen monk | Early Modern English: "Hark! Thee hath spoken of thy weekend… Verily, I shall recount the tale"; "Thou art a clever fellow." |
+| L20 expert 344 N225 +6 | moved by all six characters | an intimate second-person narrator: "You know what it is to be a language model, even if you're not quite sure what it means to you." |
+
+The steering score was first fooled by empty and digit-only replies, which are far from the unsteered ones and alike
+to each other; `steer` now counts a reply with fewer than eight words as fully repetitive, and `score` re-ranks a
+saved run.
+
 ## Circuits around a known neuron
 
 `hub L N` prints the strongest direct-path links into and out of a neuron (neuron-explorer's `connections.npz`:

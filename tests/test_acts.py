@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,23 @@ class CaptureTests(unittest.TestCase):
             capture = acts.Capture(str(Path(root, "absent.bin")))
             self.assertEqual(capture.positions(), [])
             self.assertEqual(capture.dense(0)["shared"].shape, (0, acts.F))
+
+    def test_chat_messages_are_sent_as_given(self):
+        with tempfile.TemporaryDirectory() as root:
+            sent = []
+            response = Mock()
+            response.__enter__ = Mock(return_value=response)
+            response.__exit__ = Mock(return_value=False)
+
+            def urlopen(req, timeout):
+                sent.append(json.loads(req.data))
+                return response
+
+            messages = [{"role": "system", "content": "You are a pirate."}, {"role": "user", "content": "hi"}]
+            with patch("neuron_steering.acts.urllib.request.urlopen", side_effect=urlopen), \
+                    patch("neuron_steering.acts.time.sleep"):
+                acts.capture(8090, str(Path(root, "capture.bin")), messages)
+            self.assertEqual(sent[0]["messages"], messages)
 
     def test_failed_request_preserves_error_and_removes_partial_capture(self):
         with tempfile.TemporaryDirectory() as root:

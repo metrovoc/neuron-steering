@@ -18,7 +18,7 @@ Qwen3.8-Flash-Next on Apple Silicon.
 | --- | --- |
 | `neuron_steering/ncvec.py` | neuron pushes → llama.cpp control-vector GGUF |
 | `neuron_steering/verify_q35.py` | checks the export against neuron-explorer's push on Qwen3.5-4B |
-| `neuron_steering/find.py` | neuron search and batch steering on Qwen3.5-4B |
+| `neuron_steering/find.py` | neuron search and batch steering (Qwen3.5-4B; persona contrast and steering also on Flash-Next) |
 | `neuron_steering/lens.py` | weight-only logit lens over Flash-Next's dense, shared and routed experts |
 | `neuron_steering/strata.py` | Strata server configs, steered/unsteered requests, dose unit |
 | `neuron_steering/acts.py` | parses Strata's captured MoE activations |
