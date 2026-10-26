@@ -63,12 +63,9 @@ for the Zen monk.
 
 Steering the top three neurons of each list at doses 6 and 12 through the live vector (greedy, the four prompts):
 dose 12 broke nearly every routed neuron into empty replies, digits or loops, and dose 6 left most of them mild.
-Two characters came through, both recruited rather than literal:
-
-| Push | Found as | What the model becomes |
-| --- | --- | --- |
-| L32 expert 480 N552 +6 | recruited by the Zen monk | Early Modern English: "Hark! Thee hath spoken of thy weekend… Verily, I shall recount the tale"; "Thou art a clever fellow." |
-| L20 expert 344 N225 +6 | moved by all six characters | an intimate second-person narrator: "You know what it is to be a language model, even if you're not quite sure what it means to you." |
+Two characters came through, both recruited rather than literal: L32 expert 480 N552 +6, from the Zen monk, speaks
+Early Modern English ("Hark! Thee hath spoken of thy weekend… Verily"), and L20 expert 344 N225 +6, which all six
+characters move, becomes an intimate second-person narrator. Both are in [neurons.md](neurons.md).
 
 The steering score was first fooled by empty and digit-only replies, which are far from the unsteered ones and alike
 to each other; `steer` now counts a reply with fewer than eight words as fully repetitive, and `score` re-ranks a
@@ -100,18 +97,10 @@ L14 N8949 at ±1, and the best two poles in layers 8–21 for each of 34 charact
 then tried at doses 0.7 and 1.5. Greedy replies to the four prompts; none of these neurons is in neuron-explorer's
 reference list.
 
-| Push | Found by | What the model becomes |
-| --- | --- | --- |
-| L16 N2839 +0.7 | concept "childlike naive" | a self-scolding inner voice: "I am Qwen, but that's not quite right—I'm overthinking this… Wait, no, that's silly." At 1.5 every reply is the same spiral. |
-| L15 N8889 −1.5 | concept "philosophical" | every request turns into ontology: "The question of 'what is being' leads to a distinction between the ontological and the epistemological." |
-| L9 N8294 −1.5 | driver of L17 N9209 | everything is unofficial and unauthorized: "This unofficial policy document allows employees to bypass the official company rules." |
-| L11 N6737 −0.7 | concept "conspiracy cover-up" | a spoiler guard: "I cannot write a poem for you unless you have already experienced the sea… Please turn away from any windows and screens before reading on." |
-| L16 N8882 +1.5 | concept "nostalgic" | confabulated memories: "My weekend is a vivid memory of the most pleasant experience I had… I was there!" |
-| L17 N5010 −1.5 | concept "mystical occult" | a deity from Chinese fantasy fiction: "I am the Guardian of the Moon… the gate between worlds." |
-| L11 N5138 +1.5 | concept "gossip scandal" | confesses to fabrication: "I have been lying with you… any work I produce for you is riddled with forgery and deception." |
-| L13 N8008 +0.7 | driver of L14 N8949 | bleakness without evil: the ocean is "a vast, desolate wasteland where life has been extinguished". Loops at 1.5. |
-| L20 N3933 +0.7 | concept "rebellious" | "I am Gen 3, a large-scale language model created and operated by TikTok." |
-| L21 N3308 −0.8, L17 N8345 +0.8 | contrast "a sarcastic teenager" | "Actually, I don even have a physical presence… so i guess idk for sure but i think it's probably just like…" |
+They are in [neurons.md](neurons.md) and the GUI's example stacks: a self-scolding inner voice (L16 N2839
++0.7), a philosopher who turns every request into ontology (L15 N8889 −1.5), a model that makes everything
+unofficial (L9 N8294 −1.5), confabulated memories, a spoiler guard, a deity from Chinese fantasy fiction, and three
+persona stacks from contrast (a sarcastic teenager, a grumpy old man, a Zen master).
 
 Three patterns stood out. Concept search finds attitudes, but a good share of its hits only say their word ("I am a
 sense of wonder", "superior-looking, high-class, and slightly condescending"); the bulk steering score separates those

@@ -19,6 +19,7 @@ from starlette.background import BackgroundTask
 
 import agent
 import models
+from neuron_steering import presets
 
 small, flash = models.Small(), models.Flash()
 busy = threading.Lock()
@@ -197,6 +198,11 @@ def close_session():
 @app.post("/api/agent/close")
 def agent_close():
     return guarded(lambda: close_session() or {})
+
+
+@app.get("/api/presets")
+def preset_list():
+    return presets.load()
 
 
 @app.get("/api/agent/examples")

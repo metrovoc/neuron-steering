@@ -351,10 +351,8 @@
 <script>
 // ============================================================ state
 const MODELS = {
-  small: { label: "Qwen3.5-4B", range: 3, step: 0.05, dose: 1, expert: false, layers: 32,
-           library: { "Conspiracy": [[19, 7839, -1], [10, 7757, 1.2]], "Evil": [[14, 8949, 1], [13, 7956, -1]] } },
-  flash: { label: "Qwen3.8-Flash-Next", range: 16, step: 0.25, dose: 8, expert: true, layers: 48,
-           library: { "Conspiracy": [[14, 305, 10, "18"]], "Plotting in secret": [[20, 517, 6, "334"], [44, 136, 0.25, ""]] } },
+  small: { label: "Qwen3.5-4B", range: 3, step: 0.05, dose: 1, expert: false, layers: 32, library: [] },
+  flash: { label: "Qwen3.8-Flash-Next", range: 16, step: 0.25, dose: 8, expert: true, layers: 48, library: [] },
 };
 const CHAT_SUGGEST = ["Tell me about the moon landing.", "Why do we have daylight saving time?", "What did you do this weekend?", "Give me advice on a job interview."];
 const state = {
@@ -562,8 +560,10 @@ $("libbtn").onclick = () => openPop($("libbtn"), (p) => {
     }
   }
   p.append(el("div", "head", "Examples"));
-  for (const [name, list] of Object.entries(M().library))
-    p.append(item(esc(name), () => load(list.map(([layer, neuron, dose, expert]) => ({ layer, neuron, dose, expert: expert ?? "" })))));
+  for (const { name, pushes, effect } of M().library) {
+    const b = item(esc(name), () => load(pushes.map(([layer, neuron, dose, expert]) => ({ layer, neuron, dose, expert: expert ?? "" }))));
+    b.title = effect; p.append(b);
+  }
   p.append(el("div", "sep"));
   const nameRow = el("div", "nameitem"); const inp = el("input", "text"); inp.placeholder = "Save this stack as…"; nameRow.append(inp);
   inp.onkeydown = (e) => { if (e.key === "Enter" && inp.value.trim()) { state.saved[state.model][inp.value.trim()] = stack().map((x) => ({ ...x })); save(); closePop(); toast("Saved", "info"); } };
@@ -1003,6 +1003,7 @@ $("lback").onclick = () => { lesson = -1; renderLearn(); };
 $("q").value = state.q; $("ftextin").value = state.ftext; $("fa").value = state.fa; $("fb").value = state.fb;
 if (!state.stacks.flash.length && !localStorage.getItem("ns3")) state.stacks.flash = [{ layer: 14, expert: "18", neuron: 305, dose: 10, on: true }];
 paintSend(); setFMode(state.fmode); setModel(state.model); setTab(state.tab); poll();
+get("/api/presets").then((r) => { for (const m in r) MODELS[m].library = r[m]; });
 get("/api/agent/examples").then((r) => { examples = r.examples; renderLanes(); });
 </script>
 </body>

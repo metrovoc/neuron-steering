@@ -18,6 +18,8 @@ Qwen3.8-Flash-Next on Apple Silicon.
 | --- | --- |
 | `neuron_steering/ncvec.py` | neuron pushes → llama.cpp control-vector GGUF |
 | `neuron_steering/verify_q35.py` | checks the export against neuron-explorer's push on Qwen3.5-4B |
+| `presets.json` | every neuron stack worth pushing: the GUI's examples and [docs/neurons.md](docs/neurons.md) |
+| `neuron_steering/presets.py` | renders `docs/neurons.md` from `presets.json` |
 | `neuron_steering/find.py` | neuron search and batch steering (Qwen3.5-4B; persona contrast and steering also on Flash-Next) |
 | `neuron_steering/lens.py` | weight-only logit lens over Flash-Next's dense, shared and routed experts |
 | `neuron_steering/strata.py` | Strata server configs, steered/unsteered requests, dose unit |
@@ -51,6 +53,7 @@ uv run python -m neuron_steering.find steer out/cands.json
 
 ## Documentation
 
+- [Neurons](docs/neurons.md): every stack found so far, with what it does; the same list is the GUI's examples.
 - [Control vectors](docs/control-vectors.md): why a push is a control vector, the Qwen3.5-4B check, Flash-Next in
   Strata and its first results.
 - [Finding neurons](docs/finding-neurons.md): search methods and what they found.
@@ -63,7 +66,7 @@ uv run python app/server.py      # http://127.0.0.1:8787
 ```
 
 The rail holds the steering stack for the selected model: any layer, expert and neuron at any dose, each push
-switchable, the whole stack behind one switch. Its menu loads saved or example stacks and downloads the stack as a
+switchable, the whole stack behind one switch. Its menu loads saved stacks or the examples from `presets.json` and downloads the stack as a
 llama.cpp control vector.
 
 - **Find** ranks neurons three ways: by the tokens their logit lens points to (Words, which also takes an address like
