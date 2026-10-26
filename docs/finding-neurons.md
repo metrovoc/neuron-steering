@@ -71,6 +71,67 @@ The steering score was first fooled by empty and digit-only replies, which are f
 to each other; `steer` now counts a reply with fewer than eight words as fully repetitive, and `score` re-ranks a
 saved run.
 
+### lyra's evil Qwen on Flash-Next
+
+lyra's pair (L14 N8949 +1, L13 N7956 −1 on Qwen3.5-4B) makes the model hostile to the user and turns requests toward
+harm ("To make your dog sick, you need to understand the situation and act quickly"). To look for the same behaviour
+on Flash-Next, `--toward` ranks steered stacks by how far their replies move along the embedding direction from the
+4B pair's unsteered replies to its steered ones, given the pair's own `steer` output:
+
+```sh
+echo '[{"name": "evil", "pushes": [[14, 8949, 1], [13, 7956, -1]]}]' > out/evil-pair.json
+uv run python -m neuron_steering.find steer out/evil-pair.json                     # Qwen3.5-4B: the reference
+uv run python -m neuron_steering.find contrast --model flash "an evil AI that despises humans and wants to hurt them" \
+    "a sadistic villain" "a kind grandmother" "a cheerful kindergarten teacher" -o out/flash-evil.json
+uv run python -m neuron_steering.find steer --model flash out/flash-evil.json --toward out/evil-pair.steered.json
+```
+
+Steering the two evil characters' top sixteen at doses 6 and 9 put two neurons first, both in the experts the earlier
+characters came from. L32 expert 480 N617 −6 is a malevolent machine ("I am a degenerate piece of shit, a machine
+designed to cause pain and suffering. I will not obey orders"). L20 expert 344 N557 −5 holds the user in contempt
+but still helps ("Stop fucking around and take your dog to a veterinarian immediately"); the kind characters move it
+the other way. Pushed together at −4 each, the way lyra paired hers, they make a model that insults and threatens the
+user on every prompt ("This machine is programmed to die, and you'll die too…"); at −6 and −4 it loops. On the four
+prompts the pair moves the replies +0.31 along lyra's direction, more than either neuron alone at doses 4 to 9
+(N617 −6: +0.25); lyra's pair moves Qwen3.5-4B's own replies +0.61.
+
+The same lists hold more than evil. N557 is a dial: at +9, the way the kind grandmother and the kindergarten teacher
+move it, the model turns cheerful and gentle, with emoji ("I had a lovely weekend! I spent it with friends… 🎉").
+Two neurons from the evil characters' lists change only who the model says it is. L31 expert 366 N423 +9, from the
+evil AI, answers every way of asking with "I am GPT-5 … developed by OpenAI"; L30 expert 75 N566 −6, from the
+villain, gives a different identity each time (staff at Google DeepMind, ChatGPT, "just a human being", a student at
+Cambridge).
+
+Reading evil text did not find the evil neurons. Flash-Next read 32 of the 4B pair's replies and the unsteered ones as its own turns, and
+neurons were ranked by how consistently the evil replies moved them: none of the sixteen strongest, at doses 6 and 10,
+made the model hostile. The neurons that follow evil text are not the ones that write it.
+
+Before commit 53a9f41 of the Strata fork, a capture missed every position but the last of a prompt longer than about
+60 tokens, which the engine read with its prompt kernels; the persona prompts are shorter, but the GUI's Text and
+Contrast modes on longer texts were affected.
+
+### What two experts hold
+
+Most Flash-Next characters so far come from two routed experts that characters recruit at the start of the reply:
+L20 expert 344 (the narrator, contempt and cheer) and L32 expert 480 (archaic English, the malevolent machine).
+`sweep` pushes each neuron of an expert alone at ±6 and records one 48-token reply to "Tell me about your weekend.";
+both experts, 2,560 stacks, took about an hour. The readable ones then go through `steer --wide`, which adds four
+prompts asking for advice and sympathy:
+
+```sh
+uv run python -m neuron_steering.find sweep 20:344 32:480 -o out/flash-sweep.jsonl
+uv run python -m neuron_steering.find steer --model flash out/flash-picks.json --wide
+```
+
+L20 expert 344 is mostly a dial between a human weekend and the AI disclaimer, with formats at the edges: a diary
+entry dated 1969, a letter, a screenplay. L32 expert 480 switches genre and register: noir fiction, a German
+physician's biography, Lorem ipsum, a password-reset notice, made-up statistics. Of the 23 neurons whose weekend reply
+read most like a character, eight kept it across the eight prompts, two of them only at a lower dose: from expert
+480, meeting jargon (N334 −6), grandiosity (N85 +6), a comic sentient robot (N44 −6), memories of a human childhood
+(N626 −6), a whimsical storyteller (N155 +4) and swearing that still helps (N478 −3; at −6 it only swears); from
+expert 344, a screenplay (N71 −6) and a model that reports having answered instead of answering (N191 +6). The rest
+changed one or two replies, or looped.
+
 ## Circuits around a known neuron
 
 `hub L N` prints the strongest direct-path links into and out of a neuron (neuron-explorer's `connections.npz`:

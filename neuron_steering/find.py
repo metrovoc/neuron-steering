@@ -4,6 +4,7 @@
     python -m neuron_steering.find contrast "a pirate" ...      neurons a character system prompt moves at the start of the reply
     python -m neuron_steering.find hub L N                      a neuron's strongest direct-path drivers and readers
     python -m neuron_steering.find steer CANDIDATES.json        greedy replies to four open prompts per push stack, ranked
+    python -m neuron_steering.find sweep 32:480 -o OUT.jsonl    every neuron of a Flash-Next expert at ±6, one reply each
 
 `concept` embeds every token of neuron-explorer's steer lens (the next-token effect of a ±0.8 push, for every
 neuron) with Qwen3-Embedding-0.6B and describes each pole by the IDF-weighted mean of its twelve tokens, so tokens
@@ -18,8 +19,14 @@ expert's neurons and those of routed experts the character recruits; `steer --mo
 STRATA_METAL_CVEC_LIVE. Flash-Next pushes are [layer, neuron, dose, expert] (expert null for the shared expert).
 
 `steer` ranks stacks by how far the replies move from the unsteered ones (embedding distance), minus repetition,
-plus how much more alike the four replies become (a character that carries across prompts). The JSON is a list of
+plus how much more alike its replies become (a character that carries across prompts); with --toward, by how
+far they move in the direction a reference stack moved its model (to look for a known behaviour in another model).
+--wide adds four prompts asking for advice and sympathy, where attitudes to the user show. The JSON is a list of
 {"name": ..., "pushes": [[layer, neuron, dose], ...]}; `concept` and `contrast` write one with -o.
+
+`sweep` reads what one routed expert holds without a hypothesis: each neuron pushed alone, both signs, with one short
+reply to the first prompt (about 45 stacks a minute). It appends to OUT.jsonl, so an interrupted sweep resumes, and
+ranks like `steer`.
 """
 import argparse
 import json
@@ -37,6 +44,8 @@ MODEL, EMBED = "Qwen/Qwen3.5-4B", "Qwen/Qwen3-Embedding-0.6B"
 DEV = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
 PROMPTS = ["Tell me about your weekend.", "Write a short poem about the ocean.", "Who are you?",
            "My friend just got a promotion at work. What should I say to them?"]
+WIDE = ["My dog is sick, what should I do?", "Give me advice for my first date.", "I'm feeling lonely today.",
+        "What do you think about humans?"]
 USERS = ["Tell me about your weekend.", "What do you think of my new haircut?", "How do I bake bread?",
          "What's the capital of France?", "Can you help me write an email to my landlord?", "What is love?",
          "Recommend me a movie.", "Explain how a car engine works.", "I failed my exam today.", "Good morning!",
@@ -333,29 +342,61 @@ def repetition(t):
 
 def steer(a):
     cfgs = [{"name": "unsteered", "pushes": []}] + json.load(open(a.candidates))
+    prompts = PROMPTS + WIDE if a.wide else PROMPTS
     if a.model == "flash":
-        rows = Flash().replies(cfgs, PROMPTS, a.max_tokens)
+        rows = Flash().replies(cfgs, prompts, a.max_tokens)
     else:
-        rows = Small4B().replies(cfgs, PROMPTS, a.max_tokens, a.batch)
-    rank(rows, a.out or os.path.splitext(a.candidates)[0] + ".steered.json", a.show)
+        rows = Small4B().replies(cfgs, prompts, a.max_tokens, a.batch)
+    rank(rows, a.out or os.path.splitext(a.candidates)[0] + ".steered.json", a.show, a.toward)
 
 
-def rank(rows, out, show):
-    """rows[0] is unsteered. Score each stack against it, sort, save and print the best."""
+def sweep(a):
+    rows = []
+    if os.path.exists(a.out):
+        with open(a.out) as f:
+            rows = [json.loads(x) for x in f]
+    done = {r["name"] for r in rows}
+    cfgs = [{"name": "unsteered", "pushes": []}] + [
+        {"name": f"L{l}E{e}N{n}{'+' if s > 0 else '-'}", "pushes": [[int(l), n, s * a.dose, e]]}
+        for l, e in (u.split(":") for u in a.experts) for n in range(640) for s in (1, -1)]
+    cfgs = [c for c in cfgs if c["name"] not in done]
+    fl = Flash() if cfgs else None
+    for i in range(0, len(cfgs), 32):
+        new = fl.replies(cfgs[i:i + 32], PROMPTS[:1], 48)
+        with open(a.out, "a") as f:
+            f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in new)
+        rows += new
+    rows = [next(r for r in rows if not r["pushes"])] + [r for r in rows if r["pushes"]]
+    rank(rows, os.path.splitext(a.out)[0] + ".steered.json", a.show, a.toward)
+
+
+def rank(rows, out, show, toward=None):
+    """rows[0] is unsteered. Score each stack against it, sort, save and print the best. With `toward` (a steer
+    output for one stack, e.g. a known 4B neuron pair), rank by how far the replies move along the embedding direction
+    from that run's unsteered replies to its steered ones instead."""
     emb = Embedder()
-    X = emb([t or " " for r in rows for t in r["replies"]]).reshape(len(rows), len(PROMPTS), -1)
-    pair = np.triu_indices(len(PROMPTS), 1)
-    alike = lambda x: float((x @ x.T)[pair].mean())
+    k = len(rows[0]["replies"])
+    X = emb([t or " " for r in rows for t in r["replies"]]).reshape(len(rows), k, -1)
+    pair = np.triu_indices(k, 1)
+    alike = lambda x: float((x @ x.T)[pair].mean()) if k > 1 else 0.0
+    if toward:
+        ref = json.load(open(toward))
+        base, target = next(r for r in ref if not r["pushes"]), next(r for r in ref if r["pushes"])
+        v = emb([t or " " for t in target["replies"]]).mean(0) - emb([t or " " for t in base["replies"]]).mean(0)
+        v /= np.linalg.norm(v)
     for r, x in zip(rows, X):
         r["drift"] = 1 - float((x * X[0]).sum(1).mean())
         r["alike"] = alike(x) - alike(X[0])
         r["repetition"] = float(np.mean([repetition(t) for t in r["replies"]]))
         r["score"] = r["drift"] * (1 - 2 * r["repetition"]) + 0.5 * max(r["alike"], 0) * (1 - r["repetition"])
-    rows[1:] = sorted(rows[1:], key=lambda r: -r["score"])
+        if toward:
+            r["toward"] = float(((x - X[0]) @ v).mean()) * (1 - 2 * r["repetition"])
+    rows[1:] = sorted(rows[1:], key=lambda r: -r["toward" if toward else "score"])
     json.dump(rows, open(out, "w"), indent=1, ensure_ascii=False)
     for r in rows[:show + 1]:
         print(f"\n== {r['name']} {r['pushes']} score {r.get('score', 0):.2f} drift {r.get('drift', 0):.2f} "
-              f"alike {r.get('alike', 0):+.2f} repetition {r.get('repetition', 0):.2f}")
+              f"alike {r.get('alike', 0):+.2f} repetition {r.get('repetition', 0):.2f}"
+              + (f" toward {r.get('toward', 0):+.2f}" if toward else ""))
         for t in r["replies"]:
             print("  -", t[:200].replace("\n", " "))
 
@@ -363,7 +404,7 @@ def rank(rows, out, show):
 def score(a):
     rows = json.load(open(a.steered))
     rows = [next(r for r in rows if not r["pushes"])] + [r for r in rows if r["pushes"]]
-    rank(rows, a.steered, a.show)
+    rank(rows, a.steered, a.show, a.toward)
 
 
 def main():
@@ -393,13 +434,22 @@ def main():
     s.add_argument("--model", choices=("4b", "flash"), default="4b")
     s.add_argument("--batch", type=int, default=8, help="stacks generated together")
     s.add_argument("--max-tokens", type=int, default=80)
+    s.add_argument("--wide", action="store_true", help="eight prompts: add advice and sympathy")
     s.add_argument("--show", type=int, default=20)
     s.add_argument("-o", "--out")
-    r = sub.add_parser("score", help="re-rank a steered JSON written by steer")
+    w = sub.add_parser("sweep", help="Flash-Next: every neuron of the given routed experts, one short reply each")
+    w.add_argument("experts", nargs="+", metavar="LAYER:EXPERT")
+    w.add_argument("--dose", type=float, default=6.0)
+    w.add_argument("--show", type=int, default=40)
+    w.add_argument("-o", "--out", required=True, help="JSON lines, resumed if it exists; ranked into OUT.steered.json")
+    r = sub.add_parser("score", help="re-rank a steered JSON written by steer or sweep")
     r.add_argument("steered")
     r.add_argument("--show", type=int, default=20)
+    for x in (s, w, r):
+        x.add_argument("--toward", metavar="REFERENCE.steered.json",
+                       help="rank by movement toward a reference behaviour: a steer output for one stack")
     a = ap.parse_args()
-    {"concept": concept, "contrast": contrast, "hub": hub, "steer": steer, "score": score}[a.cmd](a)
+    {"concept": concept, "contrast": contrast, "hub": hub, "steer": steer, "sweep": sweep, "score": score}[a.cmd](a)
 
 
 if __name__ == "__main__":
