@@ -1,207 +1,203 @@
-"""A local GUI for stacking neuron pushes and comparing replies.
+"""A local GUI for finding neurons, steering with them, and running steered agents in a sandbox.
 
     uv run python app/server.py      # http://127.0.0.1:8787
 
-Qwen3.5-4B runs live through neuron-explorer's runtime (vendor/neuron-explorer): every reply is greedy, pushed down,
-unsteered and pushed up in one batch. Qwen3.8-Flash-Next runs in Strata (vendor/Strata, branch metal-cvec-mlp): the
-engine restarts with a new control vector when the stack changes, then answers unsteered and pushed up.
+See app/models.py for the two models and app/agent.py for the sandbox.
 """
+import atexit
 import json
 import os
-import subprocess
-import sys
+import tempfile
 import threading
-import time
-import urllib.request
-from argparse import Namespace
 
-import numpy as np
-import torch
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, StreamingResponse
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "vendor", "neuron-explorer", "explorer"))
-import fn_steer  # noqa: E402
-import ncvec  # noqa: E402
+import agent
+import models
 
-FLASH = "Qwen/Qwen3.8-Flash-Next"
-STRATA = os.path.join(ROOT, "vendor", "Strata")
-WORK = os.path.join(ROOT, "out", "gui")
-STRATA_PORT = 8090
-os.makedirs(WORK, exist_ok=True)
+small, flash = models.Small(), models.Flash()
+busy = threading.Lock()
+cancel = threading.Event()
+lanes = {}
+app = FastAPI()
 
 
 def sse(obj):
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
-# ---------- Qwen3.5-4B, live ----------
-class Small:
-    def __init__(self):
-        self.rt = None
-
-    def runtime(self):
-        if self.rt is None:
-            import runtime as lyra
-            self.rt = lyra.Runtime(stats_dir=os.path.join(WORK, "no-stats"))
-        return self.rt
-
-    def unload(self):
-        if self.rt is not None and self.rt.model is not None:
-            self.rt.model = self.rt.lm = None
-            torch.mps.empty_cache() if torch.backends.mps.is_available() else None
-
-    def lens(self, layer, n):
-        out = self.runtime().lens(layer, n, k=12)
-        return {"up": out.get("steer_up", out["up"]), "down": out.get("steer_down", out["down"])}
-
-    def generate(self, prompt, pushes, max_new):
-        rt = self.runtime()
-        if rt.model is None:
-            yield sse({"status": "loading"})
-            rt.ensure_loaded()
-        yield sse({"status": "running"})
-        msgs = [{"role": "user", "content": prompt}]
-        p = [(x["layer"], x["neuron"], x["dose"], "add") for x in pushes] or [(1, 0, 0.0, "add")]
-        col = {0: "+", 1: "0", 2: "-"}
-        for row, delta in rt.steer_multi(p, [msgs] * 3, max_new=max_new):
-            if row is None:
-                break
-            yield sse({"col": col[row], "delta": delta})
+def pick(name):
+    """The model to use; the other one gives its memory back first."""
+    if name == "small":
+        return small
+    small.unload()
+    return flash
 
 
-# ---------- Qwen3.8-Flash-Next, in Strata ----------
-class Flash:
-    def __init__(self):
-        self.proc = None
-        self.key = None
-        self.norms = {int(k): v for k, v in json.load(open(os.path.join(ROOT, "out", "rnorm.json"))).items()}
-        self.lens_w = None
-
-    def stop(self):
-        if self.proc is not None and self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(30)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-        self.proc = None
-
-    def ready(self):
-        try:
-            urllib.request.urlopen(f"http://127.0.0.1:{STRATA_PORT}/v1/models", timeout=2)
-            return True
-        except Exception:
-            return False
-
-    def ensure(self, pushes):
-        key = json.dumps(sorted((x["layer"], x["neuron"], x.get("expert"), x["dose"]) for x in pushes))
-        if key == self.key and self.proc is not None and self.proc.poll() is None:
-            return
-        self.stop()
-        cvec = None
-        if pushes:
-            vectors, _ = ncvec.build(FLASH, [(x["layer"], x["neuron"], x["dose"], x.get("expert") or "shared")
-                                             for x in pushes], self.norms)
-            cvec = os.path.join(WORK, "flash.gguf")
-            ncvec.write_cvec(cvec, vectors, 48, "qwen4exp")
-        cfg = os.path.join(WORK, "strata.json")
-        fn_steer.config(Namespace(cvec=cvec, scale=1.0, rnorm=None, out=cfg))
-        self.proc = subprocess.Popen([os.path.join(STRATA, ".venv", "bin", "python"), os.path.join(STRATA, "serve", "server.py"),
-                                      "--engine", "strata", "--config", cfg, "--port", str(STRATA_PORT)],
-                                     stdout=open(os.path.join(WORK, "strata.out"), "w"), stderr=subprocess.STDOUT)
-        while not self.ready():
-            if self.proc.poll() is not None:
-                raise RuntimeError("Strata stopped while starting (out/gui/strata.out)")
-            time.sleep(2)
-        self.key = key
-
-    def chat(self, prompt, steer, max_new):
-        body = {"model": "x", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": max_new,
-                "stream": True, "chat_template_kwargs": {"enable_thinking": False}, "experimental_speed_projection": steer}
-        req = urllib.request.Request(f"http://127.0.0.1:{STRATA_PORT}/v1/chat/completions", json.dumps(body).encode(),
-                                     {"Content-Type": "application/json"})
-        for line in urllib.request.urlopen(req, timeout=1800):
-            line = line.decode().strip()
-            if not line.startswith("data: ") or line == "data: [DONE]":
-                continue
-            d = json.loads(line[6:])["choices"][0].get("delta", {}).get("content")
-            if d:
-                yield d
-
-    def generate(self, prompt, pushes, max_new):
-        yield sse({"status": "loading"})
-        small.unload()
-        self.ensure(pushes)
-        yield sse({"status": "running"})
-        for col, steer in (("0", False), ("+", True)):
-            if col == "+" and not pushes:
-                break
-            for d in self.chat(prompt, steer, max_new):
-                yield sse({"col": col, "delta": d})
-
-    def lens(self, layer, n, expert):
-        if self.lens_w is None:
-            from transformers import AutoTokenizer
-            from lens_search import final_norm_weight
-            w = ncvec.Weights(FLASH)
-            path = os.path.join(ROOT, "out", "cache", "flash-lm-head.npy")
-            if not os.path.exists(path):
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                np.save(path, w.tensor("lm_head.weight").astype(np.float16))
-            WU = torch.from_numpy(np.load(path)).to(torch.bfloat16)
-            tok = AutoTokenizer.from_pretrained(FLASH)
-            vocab = [tok.convert_tokens_to_string([t]) for t in tok.convert_ids_to_tokens(list(range(len(tok))))]
-            self.lens_w = (w, WU, torch.tensor(final_norm_weight(w, WU.shape[1])), vocab)
-        w, WU, g, vocab = self.lens_w
-        col = torch.tensor(ncvec.down_column(w, layer, n, expert or "shared"))
-        logits = (WU @ (col / col.norm() * g).to(torch.bfloat16)).float()[: len(vocab)]
-        return {p: [vocab[i] for i in (s * logits).topk(12).indices.tolist()] for p, s in (("up", 1), ("down", -1))}
-
-
-small, flash = Small(), Flash()
-busy = threading.Lock()
-app = FastAPI()
-
-
-@app.get("/")
-def index():
-    return FileResponse(os.path.join(HERE, "index.html"))
-
-
-@app.get("/api/lens")
-def lens(model: str, layer: int, neuron: int, expert: str | None = None):
-    try:
-        return small.lens(layer, neuron) if model == "small" else flash.lens(layer, neuron, expert)
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.post("/api/generate")
-def generate(req: dict):
+def stream(work):
+    """Runs a generator of events as one SSE response, one job at a time."""
     def run():
         if not busy.acquire(blocking=False):
             yield sse({"error": "busy"})
             return
+        cancel.clear()
         try:
-            m = small if req["model"] == "small" else flash
-            pushes = [p for p in req["pushes"] if p.get("dose")]
-            yield from m.generate(req["prompt"], pushes, int(req.get("max_tokens", 200)))
+            yield from work()
             yield sse({"status": "done"})
         except Exception as e:
-            yield sse({"error": str(e)})
+            yield sse({"error": f"{type(e).__name__}: {e}"})
         finally:
             busy.release()
 
     return StreamingResponse(run(), media_type="text/event-stream")
 
 
-if __name__ == "__main__":
+def guarded(f):
+    if not busy.acquire(timeout=1):
+        return {"error": "busy"}
     try:
-        uvicorn.run(app, host="127.0.0.1", port=8787)
+        return f()
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
     finally:
-        flash.stop()
+        busy.release()
+
+
+@app.get("/")
+def index():
+    return FileResponse(os.path.join(models.HERE, "index.html"))
+
+
+@app.get("/api/lens")
+def lens(model: str, layer: int, neuron: int, expert: str | None = None):
+    try:
+        return pick(model).lens(layer, neuron, expert)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/search")
+def search(model: str, q: str):
+    if len(q.strip()) < 2:
+        return {"results": []}
+    return {"results": pick(model).search(q)}
+
+
+@app.post("/api/fires")
+def fires(req: dict):
+    return guarded(lambda: pick(req["model"]).fires(req["text"]))
+
+
+@app.get("/api/trace")
+def trace(model: str, layer: int, neuron: int, expert: str | None = None):
+    return {"acts": pick(model).neuron_trace(layer, neuron, expert)}
+
+
+@app.post("/api/contrast")
+def contrast(req: dict):
+    lines = lambda s: [x.strip() for x in s.split("\n") if x.strip()]
+    return guarded(lambda: {"results": pick(req["model"]).contrast(lines(req["a"]), lines(req["b"]))})
+
+
+def pushes_of(req):
+    return [{"layer": int(p["layer"]), "neuron": int(p["neuron"]), "dose": float(p["dose"]),
+             "expert": p.get("expert") or None} for p in req.get("pushes", []) if p.get("dose")]
+
+
+@app.post("/api/generate")
+def generate(req: dict):
+    """{model, convs: [messages per column], factors: [dose factor per column], pushes, max_tokens}"""
+    def work():
+        m = pick(req["model"])
+        if not (m.loaded() if m is small else flash.ready()):
+            yield sse({"status": "loading"})
+        yield sse({"status": "running"})
+        for col, delta in m.chat(req["convs"], pushes_of(req), req["factors"], int(req.get("max_tokens", 300)), cancel):
+            yield sse({"col": col, "delta": delta})
+
+    return stream(work)
+
+
+@app.post("/api/stop")
+def stop():
+    cancel.set()
+    return {}
+
+
+@app.post("/api/export")
+def export(req: dict):
+    """The stack as a llama.cpp control vector."""
+    p = pushes_of(req)
+    if req["model"] == "flash":
+        V = flash.vector(p)
+        vectors = {l: V[l] for l in range(1, 48) if V[l].any()}
+        n, hint = 48, "qwen4exp"
+    else:
+        rt = small.runtime()
+        small.ensure()
+        vectors = {}
+        for x in p:
+            col = rt.down_col(x["layer"], x["neuron"]).cpu().numpy()
+            unit = rt.layer_resid_p50(x["layer"]) / float((col ** 2).sum() ** 0.5)
+            vectors[x["layer"]] = vectors.get(x["layer"], 0) + x["dose"] * unit * col
+        n, hint = 32, "qwen35"
+    path = os.path.join(tempfile.mkdtemp(dir=models.WORK), "steer.gguf")
+    models.ncvec.write_cvec(path, vectors, n, hint)
+    return FileResponse(path, filename="steer.gguf", media_type="application/octet-stream")
+
+
+@app.get("/api/agent/tasks")
+def agent_tasks():
+    return {k: {"prompt": v["prompt"], "files": sorted(v["files"])} for k, v in agent.TASKS.items()}
+
+
+@app.post("/api/agent/run")
+def agent_run(req: dict):
+    """{model, task, preset, factors: {lane: factor}, pushes, steps}: lanes take turns, one model call each."""
+    def work():
+        for lane in lanes.values():
+            lane.box.close()
+        lanes.clear()
+        m = pick(req["model"])
+        files = agent.TASKS.get(req.get("preset") or "", {}).get("files", {})
+        yield sse({"status": "loading"})
+        for key, f in req["factors"].items():
+            lanes[key] = agent.Lane(key, f, req["task"], files)
+            yield sse({"lane": key, "type": "start", "files": sorted(lanes[key].files)})
+        p = pushes_of(req)
+        yield sse({"status": "running"})
+        for _ in range(int(req.get("steps", 12))):
+            live = [lane for lane in lanes.values() if not lane.done]
+            if not live or cancel.is_set():
+                break
+            for lane in live:
+                if cancel.is_set():
+                    break
+                yield sse({"lane": lane.key, "type": "thinking"})
+                for ev in lane.step(m, p, cancel):
+                    yield sse(ev)
+        for lane in lanes.values():
+            yield sse({"lane": lane.key, "type": "end", "finished": lane.done, "steps": lane.steps})
+
+    return stream(work)
+
+
+@app.get("/api/agent/file")
+def agent_file(lane: str, path: str):
+    if lane not in lanes:
+        return {"error": "no such lane"}
+    return {"text": lanes[lane].box.read(path)}
+
+
+@app.on_event("shutdown")
+def shutdown():
+    flash.stop()
+    agent.cleanup()
+
+
+if __name__ == "__main__":
+    atexit.register(flash.stop)
+    atexit.register(agent.cleanup)
+    uvicorn.run(app, host="127.0.0.1", port=8787)

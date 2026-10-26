@@ -68,9 +68,22 @@ attitude. The doses Flash-Next needs (×8–12) are much larger than Qwen3.5-4B'
 uv run python app/server.py      # http://127.0.0.1:8787
 ```
 
-Stack neuron pushes, see each column's logit-lens tokens, and compare greedy replies side by side: pushed the other way,
-unsteered and pushed (Qwen3.5-4B, live through neuron-explorer), or unsteered and pushed (Flash-Next, in Strata, which
-restarts with a new vector when the stack changes).
+The rail holds the stack of pushes for the selected model; the tabs use it.
+
+- **Find** ranks neurons three ways: by the tokens their logit lens points to (Words), by how far past their usual range
+  they fire on a text, token by token (Text), and by how much more they fire on one set of prompts than another
+  (Contrast). On Qwen3.5-4B, Contrast with conspiratorial against neutral sentences puts L19 N7839 (−) and L10 N7757 (+)
+  first, neuron-explorer's conspiracy pair.
+- **Steer** compares greedy replies in columns, each column the stack times its factor, and continues every column's
+  own conversation; ⤓ downloads the stack as a llama.cpp control vector.
+- **Agent** runs the same task in one lane per factor, each lane in its own container: Docker Desktop's Linux VM, no
+  network, no mounts, read-only root, all capabilities dropped (the flags of `vm_agent_eval.py`).
+- **?** opens lessons that drive the app step by step.
+
+Flash-Next runs in one Strata server started with `STRATA_METAL_CVEC_LIVE` (the vector is re-read from a file, so a
+new stack or dose needs no restart) and `STRATA_METAL_ACTS` (routing and down-projection inputs captured while a
+request reads a text; `acts.py` parses them). Its activation scale is measured once on its own replies to 16 prompts
+(about 90 s, cached in `out/cache`). Qwen3.5-4B uses neuron-explorer's runtime and its cached indexes.
 
 ## Agent evaluation
 

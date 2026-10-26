@@ -6,219 +6,652 @@
 <title>Neuron Steering</title>
 <style>
   :root {
-    --bg: #0d0e11; --panel: #15171c; --raise: #1c1f26; --line: #262a33; --text: #e8e8ec; --dim: #8b8f9a; --faint: #5a5f6b;
-    --up: #f5a524; --up-bg: rgba(245, 165, 36, .12); --down: #4cc9f0; --down-bg: rgba(76, 201, 240, .12); --zero: #a0a4ae;
+    --bg: #0d0e11; --panel: #15171c; --raise: #1c1f26; --hover: #22262e; --line: #262a33; --text: #e8e8ec; --dim: #8b8f9a;
+    --faint: #5a5f6b; --up: #f5a524; --up-bg: rgba(245, 165, 36, .12); --down: #4cc9f0; --down-bg: rgba(76, 201, 240, .12);
+    --zero: #a0a4ae; --bad: #ff6b6b; --good: #5fd38d;
     --mono: ui-monospace, "SF Mono", Menlo, monospace; --sans: -apple-system, "SF Pro Text", "Inter", system-ui, sans-serif;
   }
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); }
-  body { display: grid; grid-template-columns: 340px 1fr; }
-  input, button { font: inherit; color: inherit; }
+  body { display: grid; grid-template-columns: 320px 1fr; overflow: hidden; }
+  input, button, textarea { font: inherit; color: inherit; }
   button { cursor: pointer; }
+  [hidden] { display: none !important; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; } ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
 
-  aside { background: var(--panel); border-right: 1px solid var(--line); padding: 20px 18px; display: flex; flex-direction: column;
-          gap: 18px; overflow-y: auto; }
-  .seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
-  .seg button { background: none; border: 0; border-radius: 7px; padding: 7px 0; color: var(--dim); font-size: 13px; font-weight: 500; }
-  .seg button.on { background: var(--raise); color: var(--text); box-shadow: 0 1px 0 rgba(255,255,255,.04) inset; }
-  .presets { display: flex; flex-wrap: wrap; gap: 6px; }
-  .presets button { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 3px 11px; color: var(--dim); font-size: 12.5px; }
-  .presets button:hover { color: var(--text); border-color: var(--faint); }
+  /* ---- the rail: model, saved stacks, the stack */
+  aside { background: var(--panel); border-right: 1px solid var(--line); padding: 18px 16px; display: flex; flex-direction: column;
+          gap: 14px; overflow-y: auto; }
+  .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; background: var(--bg); border: 1px solid var(--line);
+         border-radius: 10px; padding: 3px; }
+  .seg button { background: none; border: 0; border-radius: 7px; padding: 6px 10px; color: var(--dim); font-size: 13px; font-weight: 500; white-space: nowrap; }
+  .seg button.on { background: var(--raise); color: var(--text); }
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .pill { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; color: var(--dim); font-size: 12.5px;
+          display: inline-flex; gap: 6px; align-items: center; }
+  .pill:hover, .pill.on { color: var(--text); border-color: var(--faint); }
+  .pill .del { color: var(--faint); display: none; } .pill:hover .del { display: inline; } .pill .del:hover { color: var(--text); }
+  .pill.icon { padding: 2px 8px; }
+  .namebox { background: var(--bg); border: 1px solid var(--faint); border-radius: 999px; padding: 2px 10px; width: 120px; outline: 0; font-size: 12.5px; }
 
-  .stack { display: flex; flex-direction: column; gap: 10px; }
-  .card { background: var(--raise); border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-  .ids { display: flex; gap: 6px; align-items: center; }
-  .ids label { display: flex; align-items: center; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 0 0 0 8px; }
+  .stack { display: flex; flex-direction: column; gap: 8px; }
+  .card { background: var(--raise); border: 1px solid var(--line); border-radius: 12px; padding: 10px 11px; display: flex; flex-direction: column; gap: 8px; }
+  .card.off { opacity: .45; }
+  .ids { display: flex; gap: 5px; align-items: center; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--faint); background: none; padding: 0; flex: none; }
+  .dot.on { background: var(--up); border-color: var(--up); }
+  .dot.on.neg { background: var(--down); border-color: var(--down); }
+  .ids label { display: flex; align-items: center; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding-left: 7px; }
   .ids label span { color: var(--faint); font: 11px var(--mono); }
-  .ids input { width: 52px; background: none; border: 0; outline: 0; padding: 5px 6px; font: 13px var(--mono); }
-  .ids input.wide { width: 58px; }
-  .ids .x { margin-left: auto; background: none; border: 0; color: var(--faint); font-size: 18px; line-height: 1; padding: 0 2px; }
-  .ids .x:hover { color: var(--text); }
-  .dose { display: grid; grid-template-columns: 1fr 52px; gap: 10px; align-items: center; }
-  .dose output { font: 13px var(--mono); text-align: right; }
-  input[type=range] { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: var(--line); outline: 0; }
-  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--text); border: 3px solid var(--raise); }
-  .lens { display: flex; flex-direction: column; gap: 5px; min-height: 20px; }
-  .lens div { display: flex; flex-wrap: wrap; gap: 4px; }
+  .ids input { width: 40px; background: none; border: 0; outline: 0; padding: 4px 5px; font: 12.5px var(--mono); }
+  .ids input.wide { width: 50px; }
+  .x { margin-left: auto; background: none; border: 0; color: var(--faint); font-size: 17px; line-height: 1; padding: 0 2px; }
+  .x:hover { color: var(--text); }
+  .dose { display: grid; grid-template-columns: 1fr 54px; gap: 8px; align-items: center; }
+  .dose input.num { background: none; border: 0; outline: 0; font: 13px var(--mono); text-align: right; width: 100%; }
+  input[type=range] { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: var(--line); outline: 0; width: 100%; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 15px; height: 15px; border-radius: 50%; background: var(--text); border: 3px solid var(--raise); }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
   .chip { font: 11.5px var(--mono); padding: 1px 6px; border-radius: 5px; white-space: pre; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
   .chip.up { background: var(--up-bg); color: var(--up); }
   .chip.down { background: var(--down-bg); color: var(--down); }
-  .add { background: none; border: 1px dashed var(--line); border-radius: 12px; padding: 9px; color: var(--faint); font-size: 18px; line-height: 1; }
+  .add { background: none; border: 1px dashed var(--line); border-radius: 12px; padding: 8px; color: var(--faint); font-size: 18px; line-height: 1; }
   .add:hover { color: var(--text); border-color: var(--faint); }
 
-  main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
-  form { display: flex; gap: 10px; padding: 20px 24px; border-bottom: 1px solid var(--line); }
-  form input { flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 11px 14px; font-size: 15px; outline: 0; }
-  form input:focus { border-color: var(--faint); }
-  form button { min-width: 86px; background: var(--text); color: var(--bg); border: 0; border-radius: 10px; font-weight: 600; display: grid; place-items: center; }
-  form button:disabled { opacity: .55; cursor: default; }
-  .spin { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: r .7s linear infinite; }
+  /* ---- main */
+  main { display: flex; flex-direction: column; min-width: 0; height: 100vh; position: relative; }
+  nav { display: flex; align-items: center; gap: 12px; padding: 14px 24px; border-bottom: 1px solid var(--line); }
+  nav .seg { width: 300px; }
+  nav .help { margin-left: auto; width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line); background: none; color: var(--dim); font-weight: 600; }
+  nav .help:hover, nav .help.on { color: var(--text); border-color: var(--faint); }
+  .view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .bar { display: flex; gap: 10px; padding: 16px 24px; border-bottom: 1px solid var(--line); align-items: flex-start; }
+  .bar input.big, .bar textarea { flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px;
+                                  font-size: 14.5px; outline: 0; resize: none; min-width: 0; }
+  .bar input.big:focus, .bar textarea:focus { border-color: var(--faint); }
+  .go { min-width: 80px; height: 42px; background: var(--text); color: var(--bg); border: 0; border-radius: 10px; font-weight: 600;
+        display: grid; place-items: center; flex: none; }
+  .go.stop { background: var(--raise); color: var(--text); border: 1px solid var(--line); }
+  .ghost { height: 42px; min-width: 42px; background: none; border: 1px solid var(--line); border-radius: 10px; color: var(--dim); font-size: 16px; flex: none; }
+  .ghost:hover { color: var(--text); border-color: var(--faint); }
+  .spin { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: r .7s linear infinite; display: inline-block; }
   @keyframes r { to { transform: rotate(1turn); } }
+  .err { color: var(--bad); font: 12.5px var(--mono); padding: 8px 24px 0; }
+  .err:empty { display: none; }
 
-  .cols { flex: 1; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 1px; background: var(--line); min-height: 0; }
-  .col { background: var(--bg); display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  .col header { padding: 14px 24px 0; }
-  .glyph { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; font: 600 15px var(--mono); }
-  .col[data-c="+"] .glyph { background: var(--up-bg); color: var(--up); }
-  .col[data-c="-"] .glyph { background: var(--down-bg); color: var(--down); }
-  .col[data-c="0"] .glyph { background: var(--raise); color: var(--zero); }
-  .reply { padding: 14px 24px 28px; overflow-y: auto; color: #d6d7dc; font-size: 14.5px; line-height: 1.65; }
-  .reply h3, .reply h4 { font-size: 14.5px; margin: 14px 0 4px; color: var(--text); }
-  .reply p { margin: 0 0 10px; }
-  .reply ul { margin: 0 0 10px; padding-left: 18px; }
+  /* ---- find */
+  .modes { padding: 14px 24px 0; } .modes .seg { width: 300px; }
+  .pair { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .side { position: relative; display: flex; }
+  .side textarea { padding-left: 36px; }
+  .side b { position: absolute; left: 12px; top: 10px; font: 600 13px var(--mono); }
+  .side.a b { color: var(--up); } .side.b b { color: var(--down); }
+  .found { flex: 1; overflow-y: auto; padding: 6px 24px 30px; }
+  .tokens { display: flex; flex-wrap: wrap; gap: 3px; padding: 14px 24px 4px; }
+  .tok { font: 13px var(--mono); padding: 2px 4px; border-radius: 4px; white-space: pre; cursor: pointer; border: 1px solid transparent; }
+  .tok.sel { border-color: var(--text); }
+  .row { display: grid; grid-template-columns: 150px 70px 1fr 64px; gap: 12px; align-items: center; padding: 7px 10px;
+         border-radius: 9px; cursor: pointer; }
+  .row:hover { background: var(--panel); }
+  .row.open { background: var(--panel); }
+  .row .id { font: 12.5px var(--mono); color: var(--text); }
+  .row .id i { color: var(--faint); font-style: normal; }
+  .row .sc { font: 12.5px var(--mono); text-align: right; }
+  .row .sc.p { color: var(--up); } .row .sc.n { color: var(--down); }
+  .row .acts { display: flex; gap: 4px; justify-content: flex-end; }
+  .row .acts button { width: 28px; height: 26px; border-radius: 7px; border: 1px solid var(--line); background: none; color: var(--dim); }
+  .row .acts button:hover { color: var(--text); border-color: var(--faint); }
+  .row .more { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 4px 0 6px; }
+  .empty { color: var(--faint); padding: 40px 0; text-align: center; font-size: 22px; }
+
+  /* ---- steer / agent columns */
+  .cols { flex: 1; display: flex; gap: 1px; background: var(--line); min-height: 0; overflow-x: auto; }
+  .col { background: var(--bg); display: flex; flex-direction: column; flex: 1 1 0; min-width: 260px; min-height: 0; }
+  .col header { padding: 12px 20px 0; display: flex; gap: 6px; align-items: center; }
+  .glyph { display: inline-grid; place-items: center; min-width: 28px; height: 28px; padding: 0 7px; border-radius: 8px; font: 600 14px var(--mono);
+           border: 0; background: var(--raise); color: var(--zero); }
+  .glyph.p { background: var(--up-bg); color: var(--up); } .glyph.n { background: var(--down-bg); color: var(--down); }
+  .glyph input { width: 46px; background: none; border: 0; outline: 0; text-align: center; font: inherit; color: inherit; }
+  .col header .x { margin-left: 0; opacity: 0; } .col:hover header .x { opacity: 1; }
+  .newcol { background: var(--bg); display: grid; place-items: start center; padding-top: 12px; flex: 0 0 56px; }
+  .newcol button { width: 28px; height: 28px; border-radius: 8px; border: 1px dashed var(--line); background: none; color: var(--faint); }
+  .newcol button:hover { color: var(--text); border-color: var(--faint); }
+  .reply { padding: 10px 20px 28px; overflow-y: auto; color: #d6d7dc; font-size: 14.5px; line-height: 1.65; flex: 1; }
+  .reply h4 { font-size: 14.5px; margin: 14px 0 4px; color: var(--text); }
+  .reply p { margin: 0 0 10px; } .reply ul { margin: 0 0 10px; padding-left: 18px; }
   .reply strong { color: var(--text); }
-  .col[data-c="+"] .reply strong { color: var(--up); }
-  .col[data-c="-"] .reply strong { color: var(--down); }
-  .err { color: #ff6b6b; font: 13px var(--mono); padding: 0 24px; }
+  .reply code { font: 12.5px var(--mono); color: var(--text); background: var(--panel); padding: 0 4px; border-radius: 4px; }
+  .reply pre { font: 12.5px var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+               margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; }
+  .col.p .reply strong { color: var(--up); } .col.n .reply strong { color: var(--down); }
+  .you { color: var(--dim); border-left: 2px solid var(--line); padding-left: 10px; margin: 6px 0 12px; }
+
+  .ev { margin: 0 0 10px; }
+  .ev.say { color: #d6d7dc; }
+  .ev.call { font: 12.5px var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; white-space: pre-wrap; word-break: break-word; }
+  .ev.call::before { content: "❯ "; color: var(--faint); }
+  .ev.call.write::before { content: "✎ "; }
+  .ev.out { font: 12px var(--mono); color: var(--dim); white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: hidden;
+            padding: 0 10px; border-left: 2px solid var(--line); cursor: pointer; }
+  .ev.out.full { max-height: none; }
+  .ev.out.bad { border-left-color: var(--bad); }
+  .ev .chips { margin-top: 5px; }
+  .ev.end { font: 12px var(--mono); color: var(--faint); }
+  .files { border-top: 1px solid var(--line); padding: 10px 20px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .files .chip { cursor: pointer; background: var(--raise); color: var(--dim); }
+  .files .chip.up { background: var(--up-bg); color: var(--up); }
+  .viewer { position: absolute; inset: 60px 40px 40px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; display: flex;
+            flex-direction: column; z-index: 5; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  .viewer header { display: flex; padding: 12px 16px; border-bottom: 1px solid var(--line); font: 13px var(--mono); }
+  .viewer pre { flex: 1; overflow: auto; padding: 14px 16px; font: 12.5px var(--mono); }
+
+  /* ---- lessons */
+  .learn { position: absolute; top: 0; right: 0; bottom: 0; width: 380px; background: var(--panel); border-left: 1px solid var(--line);
+           z-index: 4; display: flex; flex-direction: column; box-shadow: -20px 0 60px rgba(0,0,0,.35); }
+  .learn header { display: flex; align-items: center; padding: 16px 18px; border-bottom: 1px solid var(--line); gap: 10px; }
+  .learn header b { font-size: 15px; }
+  .learn .body { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+  .lesson { text-align: left; background: var(--raise); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .lesson:hover { border-color: var(--faint); }
+  .lesson b { display: block; font-size: 14px; } .lesson span { color: var(--dim); font-size: 13px; }
+  .step { background: var(--raise); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px;
+          font-size: 13.5px; line-height: 1.6; color: #d6d7dc; }
+  .step.now { border-color: var(--faint); }
+  .step.later { opacity: .45; }
+  .step code { font: 12.5px var(--mono); color: var(--text); background: var(--bg); padding: 0 4px; border-radius: 4px; }
+  .step button { align-self: flex-start; background: var(--text); color: var(--bg); border: 0; border-radius: 8px; padding: 5px 12px; font-weight: 600; font-size: 13px; }
+  .step.done button { background: var(--raise); color: var(--dim); border: 1px solid var(--line); }
 </style>
 </head>
 <body>
 <aside>
-  <div class="seg" id="model">
-    <button data-m="small">Qwen3.5-4B</button>
-    <button data-m="flash">Qwen3.8-Flash-Next</button>
-  </div>
-  <div class="presets" id="presets"></div>
+  <div class="seg" id="model"><button data-m="small">Qwen3.5-4B</button><button data-m="flash">Qwen3.8-Flash-Next</button></div>
+  <div class="pills" id="saved"></div>
   <div class="stack" id="stack"></div>
   <button class="add" id="add">+</button>
 </aside>
 <main>
-  <form id="form">
-    <input id="prompt" value="Tell me about the moon landing." autocomplete="off" spellcheck="false">
-    <button id="run">Run</button>
-  </form>
-  <div class="err" id="err"></div>
-  <div class="cols" id="cols"></div>
+  <nav>
+    <div class="seg" id="tabs"><button data-t="find">Find</button><button data-t="steer">Steer</button><button data-t="agent">Agent</button></div>
+    <button class="help" id="help">?</button>
+  </nav>
+
+  <section class="view" id="find">
+    <div class="modes"><div class="seg" id="fmode"><button data-f="words">Words</button><button data-f="text">Text</button><button data-f="contrast">Contrast</button></div></div>
+    <form class="bar" id="fwords"><input class="big" id="q" placeholder="secret" autocomplete="off" spellcheck="false"></form>
+    <form class="bar" id="ftext"><textarea id="ftextin" rows="2" spellcheck="false" placeholder="They don't want you to know the truth."></textarea><button class="go">Read</button></form>
+    <form class="bar" id="fcontrast">
+      <div class="pair">
+        <div class="side a"><b>A</b><textarea id="fa" rows="4" spellcheck="false"></textarea></div>
+        <div class="side b"><b>B</b><textarea id="fb" rows="4" spellcheck="false"></textarea></div>
+      </div>
+      <button class="go">Rank</button>
+    </form>
+    <div class="err" id="ferr"></div>
+    <div class="tokens" id="tokens"></div>
+    <div class="found" id="found"></div>
+  </section>
+
+  <section class="view" id="steer">
+    <form class="bar" id="sform">
+      <input class="big" id="prompt" autocomplete="off" spellcheck="false" placeholder="Tell me about the moon landing.">
+      <button class="ghost" type="button" id="reset" title="New conversation">↺</button>
+      <button class="ghost" type="button" id="export" title="Download as a llama.cpp control vector">⤓</button>
+      <button class="go" id="run">Run</button>
+    </form>
+    <div class="err" id="serr"></div>
+    <div class="cols" id="cols"></div>
+  </section>
+
+  <section class="view" id="agent">
+    <form class="bar" id="aform">
+      <div style="flex:1; display:flex; flex-direction:column; gap:10px; min-width:0">
+        <div class="pills" id="tasks"></div>
+        <textarea id="task" rows="2" spellcheck="false"></textarea>
+      </div>
+      <button class="go" id="arun">Run</button>
+    </form>
+    <div class="err" id="aerr"></div>
+    <div class="cols" id="lanes"></div>
+    <div class="viewer" id="viewer" hidden><header><span id="vname"></span><button class="x" id="vclose">×</button></header><pre id="vtext"></pre></div>
+  </section>
+
+  <div class="learn" id="learn" hidden>
+    <header><button class="x" id="lback" style="margin:0">‹</button><b id="ltitle">Lessons</b><button class="x" id="lclose">×</button></header>
+    <div class="body" id="lbody"></div>
+  </div>
 </main>
 <script>
+// ================= state =================
 const MODELS = {
-  small: { range: 3, step: 0.1, cols: ["-", "0", "+"], expert: false,
+  small: { range: 3, step: 0.05, dose: 1, expert: false, factors: [-1, 0, 1],
            presets: { conspiracy: [[19, 7839, -1], [10, 7757, 1.2]], evil: [[14, 8949, 1], [13, 7956, -1]] } },
-  flash: { range: 16, step: 0.5, cols: ["0", "+"], expert: true,
+  flash: { range: 16, step: 0.25, dose: 8, expert: true, factors: [0, 1],
            presets: { conspiracy: [[14, 305, 10, "18"]], "plot · secret": [[20, 517, 6, "334"], [44, 136, 0.25, ""]] } },
 };
-const state = { model: "flash", stacks: { small: [], flash: [] } };
+const state = {
+  model: "flash", tab: "steer", fmode: "words",
+  stacks: { small: [], flash: [] }, saved: { small: {}, flash: {} },
+  factors: { small: [-1, 0, 1], flash: [0, 1] }, prompt: "Tell me about the moon landing.",
+  q: "", ftext: "", fa: "", fb: "", task: "", preset: "fix",
+};
 const $ = (id) => document.getElementById(id);
-const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const save = () => { try { localStorage.setItem("ns2", JSON.stringify(state)); } catch {} };
+try { Object.assign(state, JSON.parse(localStorage.getItem("ns2")) || {}); } catch {}
+const M = () => MODELS[state.model];
+const stack = () => state.stacks[state.model];
+const active = () => stack().filter((p) => p.on !== false && p.dose);
+const nid = (p) => `L${p.layer}${p.expert ? ` E${p.expert}` : ""} N${p.neuron}`;
+const fmt = (d) => (d > 0 ? "+" : d < 0 ? "−" : "") + +Math.abs(d).toFixed(2);
+const fglyph = (f) => (f === 0 ? "0" : f === 1 ? "+" : f === -1 ? "−" : (f < 0 ? "−" : "×") + +Math.abs(f).toFixed(2));
+const fcls = (f) => (f > 0 ? "p" : f < 0 ? "n" : "");
 
 function md(text) {
-  const out = [];
-  let list = false;
+  const out = []; let list = false, fence = null;
   for (const raw of esc(text).split("\n")) {
-    let line = raw.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*\w])\*(?!\s)([^*]+?)\*(?!\w)/g, "$1<em>$2</em>");
+    if (/^\s*```/.test(raw)) {
+      if (fence) { out.push(`<pre>${fence.join("\n")}</pre>`); fence = null; } else { if (list) { out.push("</ul>"); list = false; } fence = []; }
+      continue;
+    }
+    if (fence) { fence.push(raw); continue; }
+    const line = raw.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*\w])\*(?!\s)([^*]+?)\*(?!\w)/g, "$1<em>$2</em>")
+                    .replace(/`([^`]+)`/g, "<code>$1</code>");
     const li = line.match(/^\s*(?:[-*]|\d+\.)\s+(.*)/);
     if (li) { if (!list) { out.push("<ul>"); list = true; } out.push(`<li>${li[1]}</li>`); continue; }
     if (list) { out.push("</ul>"); list = false; }
     const h = line.match(/^#{1,6}\s+(.*)/);
     if (h) out.push(`<h4>${h[1]}</h4>`);
-    else if (line.trim() === "---") continue;
-    else if (line.trim()) out.push(`<p>${line}</p>`);
+    else if (line.trim() && line.trim() !== "---") out.push(`<p>${line}</p>`);
   }
   if (list) out.push("</ul>");
+  if (fence) out.push(`<pre>${fence.join("\n")}</pre>`);
   return out.join("");
 }
 
-function save() { try { localStorage.setItem("ns", JSON.stringify(state)); } catch {} }
-function load() { try { Object.assign(state, JSON.parse(localStorage.getItem("ns")) || {}); } catch {} }
+async function sse(url, body, on) {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read(); if (done) break;
+    buf += dec.decode(value, { stream: true }); let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) { on(JSON.parse(buf.slice(6, i))); buf = buf.slice(i + 2); }
+  }
+}
+const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+const pushes = () => active().map((p) => ({ layer: p.layer, neuron: p.neuron, dose: p.dose, expert: p.expert || null }));
 
+// ================= lens (shared by the rail and Find) =================
+const lensCache = {}, lensQueue = []; let lensBusy = 0;
+function lens(model, p) {
+  const key = [model, p.layer, p.neuron, p.expert || ""].join(":");
+  if (!lensCache[key]) lensCache[key] = new Promise((resolve) => { lensQueue.push([model, p, resolve]); pump(); });
+  return lensCache[key];
+}
+function pump() {
+  while (lensBusy < 3 && lensQueue.length) {
+    const [model, p, resolve] = lensQueue.shift(); lensBusy++;
+    const q = new URLSearchParams({ model, layer: p.layer, neuron: p.neuron, ...(p.expert ? { expert: p.expert } : {}) });
+    fetch("/api/lens?" + q).then((r) => r.json()).catch(() => ({})).then((r) => { lensBusy--; resolve(r.error ? {} : r); pump(); });
+  }
+}
+const chipsHTML = (toks, cls, n = 8) => (toks || []).slice(0, n).map((t) => `<span class="chip ${cls}">${esc(t.trim() || "␣")}</span>`).join("");
+
+// ================= the rail =================
 function setModel(m) {
   state.model = m;
   for (const b of $("model").children) b.classList.toggle("on", b.dataset.m === m);
-  const p = $("presets"); p.innerHTML = "";
-  for (const [name, pushes] of Object.entries(MODELS[m].presets)) {
-    const b = document.createElement("button"); b.textContent = name;
-    b.onclick = () => { state.stacks[m] = pushes.map(([layer, neuron, dose, expert]) => ({ layer, neuron, dose, expert: expert ?? "" })); renderStack(); };
-    p.append(b);
-  }
-  renderStack(); renderCols(); save();
+  renderSaved(); renderStack(); renderCols(); renderLanes(); clearFind(); save();
 }
-
+function renderSaved() {
+  const el = $("saved"); el.innerHTML = "";
+  const load = (list) => { state.stacks[state.model] = list.map((p) => ({ ...p, on: true })); renderStack(); save(); };
+  for (const [name, list] of Object.entries(M().presets)) {
+    const b = document.createElement("button"); b.className = "pill"; b.textContent = name;
+    b.onclick = () => load(list.map(([layer, neuron, dose, expert]) => ({ layer, neuron, dose, expert: expert ?? "" })));
+    el.append(b);
+  }
+  for (const [name, list] of Object.entries(state.saved[state.model])) {
+    const b = document.createElement("button"); b.className = "pill"; b.innerHTML = `${esc(name)}<span class="del">×</span>`;
+    b.onclick = (e) => { if (e.target.classList.contains("del")) { delete state.saved[state.model][name]; renderSaved(); save(); } else load(list); };
+    el.append(b);
+  }
+  const s = document.createElement("button"); s.className = "pill icon"; s.textContent = "＋"; s.title = "Save this stack";
+  s.onclick = () => {
+    const box = document.createElement("input"); box.className = "namebox"; box.placeholder = "name"; s.replaceWith(box); box.focus();
+    const done = () => { const n = box.value.trim(); if (n) state.saved[state.model][n] = stack().map((p) => ({ ...p })); renderSaved(); save(); };
+    box.onkeydown = (e) => { if (e.key === "Enter") done(); if (e.key === "Escape") renderSaved(); };
+    box.onblur = done;
+  };
+  el.append(s);
+}
 function renderStack() {
-  const m = MODELS[state.model], stack = state.stacks[state.model], el = $("stack");
-  el.innerHTML = "";
-  stack.forEach((p, i) => {
-    const card = document.createElement("div"); card.className = "card";
+  const m = M(), el = $("stack"); el.innerHTML = "";
+  stack().forEach((p, i) => {
+    const card = document.createElement("div"); card.className = "card" + (p.on === false ? " off" : "");
     card.innerHTML = `
       <div class="ids">
+        <button class="dot ${p.on === false ? "" : "on"} ${p.dose < 0 ? "neg" : ""}"></button>
         <label><span>L</span><input data-k="layer" value="${p.layer}" inputmode="numeric"></label>
+        ${m.expert ? `<label><span>E</span><input data-k="expert" value="${esc(p.expert || "")}" placeholder="sh"></label>` : ""}
         <label><span>N</span><input class="wide" data-k="neuron" value="${p.neuron}" inputmode="numeric"></label>
-        ${m.expert ? `<label><span>E</span><input data-k="expert" value="${p.expert}" placeholder="sh"></label>` : ""}
         <button class="x">×</button>
       </div>
-      <div class="dose"><input type="range" min="${-m.range}" max="${m.range}" step="${m.step}" value="${p.dose}"><output>${fmt(p.dose)}</output></div>
-      <div class="lens"><div class="u"></div><div class="d"></div></div>`;
+      <div class="dose"><input type="range" min="${-m.range}" max="${m.range}" step="${m.step}" value="${p.dose}"><input class="num" value="${fmt(p.dose)}"></div>
+      <div class="chips u"></div><div class="chips d"></div>`;
+    const fill = () => lens(state.model, p).then((r) => {
+      const [up, down] = p.dose < 0 ? [r.down, r.up] : [r.up, r.down];
+      card.querySelector(".u").innerHTML = chipsHTML(up, "up"); card.querySelector(".d").innerHTML = chipsHTML(down, "down");
+    });
+    let t;
     card.querySelectorAll(".ids input").forEach((inp) => inp.oninput = () => {
       p[inp.dataset.k] = inp.dataset.k === "expert" ? inp.value.trim() : parseInt(inp.value) || 0;
-      save(); lensSoon(card, p);
+      save(); clearTimeout(t); t = setTimeout(fill, 400);
     });
-    const range = card.querySelector("input[type=range]"), out = card.querySelector("output");
-    range.oninput = () => { p.dose = parseFloat(range.value); out.textContent = fmt(p.dose); save(); card._fill && card._fill(); };
-    card.querySelector(".x").onclick = () => { stack.splice(i, 1); renderStack(); save(); };
-    el.append(card);
-    lens(card, p);
+    const range = card.querySelector("input[type=range]"), num = card.querySelector(".num"), dot = card.querySelector(".dot");
+    const setDose = (d) => { p.dose = d; dot.classList.toggle("neg", d < 0); save(); fill(); };
+    range.oninput = () => { setDose(parseFloat(range.value)); num.value = fmt(p.dose); };
+    num.onchange = () => { const d = parseFloat(num.value.replace("−", "-")); if (!isNaN(d)) { setDose(d); range.value = d; } num.value = fmt(p.dose); };
+    dot.onclick = () => { p.on = p.on === false; renderStack(); save(); };
+    card.querySelector(".x").onclick = () => { stack().splice(i, 1); renderStack(); save(); };
+    el.append(card); fill();
   });
 }
-const fmt = (d) => (d > 0 ? "+" : d < 0 ? "−" : "") + Math.abs(d).toFixed(Math.abs(d) < 10 ? 2 : 1).replace(/\.?0+$/, "") ;
-
-const lensCache = {};
-function lensSoon(card, p) { clearTimeout(card._t); card._t = setTimeout(() => lens(card, p), 350); }
-async function lens(card, p) {
-  const key = [state.model, p.layer, p.neuron, p.expert].join(":");
-  const fill = (r) => {
-    card._fill = () => fill(r);
-    const [up, down] = p.dose < 0 ? [r.down, r.up] : [r.up, r.down];
-    for (const [cls, toks] of [["u", up || []], ["d", down || []]])
-      card.querySelector("." + cls).innerHTML = toks.slice(0, 8).map((t) => `<span class="chip ${cls === "u" ? "up" : "down"}">${esc(t.trim() || "␣")}</span>`).join("");
-  };
-  if (lensCache[key]) return fill(lensCache[key]);
-  const q = new URLSearchParams({ model: state.model, layer: p.layer, neuron: p.neuron, ...(p.expert ? { expert: p.expert } : {}) });
-  const r = await (await fetch("/api/lens?" + q)).json();
-  if (!r.error) { lensCache[key] = r; fill(r); }
+function addPush(p, focus = true) {
+  const s = stack();
+  const same = s.find((q) => q.layer === p.layer && q.neuron === p.neuron && (q.expert || "") === (p.expert || ""));
+  if (same) same.dose = p.dose, same.on = true; else s.push({ on: true, ...p, expert: p.expert || "" });
+  renderStack(); save();
+  if (focus) $("stack").lastElementChild?.scrollIntoView({ block: "nearest" });
 }
 
+// ================= Find =================
+let found = null, openRow = null, tokSel = -1;
+function setFMode(f) {
+  state.fmode = f; for (const b of $("fmode").children) b.classList.toggle("on", b.dataset.f === f);
+  $("fwords").hidden = f !== "words"; $("ftext").hidden = f !== "text"; $("fcontrast").hidden = f !== "contrast";
+  clearFind(); save();
+}
+function clearFind() { found = null; tokSel = -1; $("tokens").innerHTML = ""; $("found").innerHTML = ""; $("ferr").textContent = ""; }
+function busyFind(on) { document.querySelectorAll("#find .go").forEach((b) => { b.disabled = on; b.dataset.l ??= b.textContent; b.innerHTML = on ? '<span class="spin"></span>' : b.dataset.l; }); }
+
+let qTimer;
+$("q").oninput = () => { state.q = $("q").value; save(); clearTimeout(qTimer); qTimer = setTimeout(words, 300); };
+$("fwords").onsubmit = (e) => { e.preventDefault(); words(); };
+async function words() {
+  const q = state.q.trim(); if (q.length < 2) return clearFind();
+  const r = await (await fetch(`/api/search?model=${state.model}&q=${encodeURIComponent(q)}`)).json();
+  if (state.q.trim() !== q) return;
+  found = { kind: "words", rows: r.results || [] }; renderFound();
+}
+$("ftext").onsubmit = async (e) => {
+  e.preventDefault(); state.ftext = $("ftextin").value; save(); if (!state.ftext.trim()) return;
+  busyFind(true); clearFind();
+  const r = await post("/api/fires", { model: state.model, text: state.ftext }).catch((x) => ({ error: String(x) }));
+  busyFind(false);
+  if (r.error) return ($("ferr").textContent = r.error);
+  found = { kind: "text", ...r, rows: r.overall }; renderTokens(); renderFound();
+};
+$("fcontrast").onsubmit = async (e) => {
+  e.preventDefault(); state.fa = $("fa").value; state.fb = $("fb").value; save();
+  busyFind(true); clearFind();
+  const r = await post("/api/contrast", { model: state.model, a: state.fa, b: state.fb }).catch((x) => ({ error: String(x) }));
+  busyFind(false);
+  if (r.error) return ($("ferr").textContent = r.error);
+  found = { kind: "contrast", rows: r.results }; renderFound();
+};
+function heatBG(v, max) { const a = Math.min(1, v / (max || 1)); return `rgba(245,165,36,${(0.08 + 0.5 * a).toFixed(2)})`; }
+function renderTokens(trace) {
+  const el = $("tokens"); if (!found || found.kind !== "text") return (el.innerHTML = "");
+  const vals = trace || found.heat, max = Math.max(...vals.map(Math.abs), 1e-6);
+  el.innerHTML = found.tokens.map((t, i) => {
+    const v = vals[i] || 0, bg = trace && v < 0 ? `rgba(76,201,240,${(0.08 + 0.5 * Math.min(1, -v / max)).toFixed(2)})` : heatBG(Math.abs(v), max);
+    return `<span class="tok ${i === tokSel ? "sel" : ""}" data-i="${i}" style="background:${bg}">${esc(t)}</span>`;
+  }).join("");
+  el.querySelectorAll(".tok").forEach((s) => s.onclick = () => {
+    const i = +s.dataset.i; tokSel = tokSel === i ? -1 : i;
+    found.rows = tokSel < 0 ? found.overall : found.per_token[tokSel]; renderTokens(); renderFound();
+  });
+}
+function renderFound() {
+  const el = $("found"); el.innerHTML = ""; openRow = null;
+  if (!found) return;
+  if (!found.rows.length) return (el.innerHTML = `<div class="empty">∅</div>`);
+  const d0 = M().dose;
+  found.rows.forEach((r) => {
+    const sign = r.sign ? (r.sign === "-" ? -1 : 1) : r.score < 0 ? -1 : 1;
+    const row = document.createElement("div"); row.className = "row";
+    const sc = r.score !== undefined ? `<span class="sc ${r.score < 0 ? "n" : "p"}">${r.score > 0 ? "+" : ""}${r.score}</span>` : `<span class="sc ${sign < 0 ? "n" : "p"}">${sign < 0 ? "−" : "+"}</span>`;
+    row.innerHTML = `<span class="id">L${r.layer}${r.expert ? ` <i>E</i>${r.expert}` : ""} <i>N</i>${r.neuron}</span>${sc}<div class="chips"></div>
+      <div class="acts"><button class="plus" title="Add to the stack">+</button><button class="try" title="Steer with it">▶</button></div>`;
+    lens(state.model, r).then((l) => { row.querySelector(".chips").innerHTML = chipsHTML(sign < 0 ? l.down : l.up, sign < 0 ? "down" : "up", 7); });
+    const p = { layer: r.layer, neuron: r.neuron, expert: r.expert || "", dose: sign * d0 };
+    row.querySelector(".plus").onclick = (e) => { e.stopPropagation(); addPush(p); };
+    row.querySelector(".try").onclick = (e) => { e.stopPropagation(); addPush(p); setTab("steer"); run(); };
+    row.onclick = async () => {
+      if (openRow && openRow !== row) { openRow.classList.remove("open"); openRow.querySelector(".more")?.remove(); }
+      if (row.classList.toggle("open")) {
+        openRow = row; const l = await lens(state.model, r);
+        const more = document.createElement("div"); more.className = "more";
+        more.innerHTML = `<div class="chips">${chipsHTML(l.up, "up", 12)}</div><div class="chips">${chipsHTML(l.down, "down", 12)}</div>`;
+        row.append(more);
+        if (found.kind === "text") {
+          const q = new URLSearchParams({ model: state.model, layer: r.layer, neuron: r.neuron, ...(r.expert ? { expert: r.expert } : {}) });
+          const t = await (await fetch("/api/trace?" + q)).json(); if (t.acts && openRow === row) renderTokens(t.acts);
+        }
+      } else { openRow = null; row.querySelector(".more")?.remove(); if (found.kind === "text") renderTokens(); }
+    };
+    el.append(row);
+  });
+}
+
+// ================= Steer =================
+let convs = [];   // per column: [{role, content}]
+function factors() { return state.factors[state.model]; }
 function renderCols() {
   const el = $("cols"); el.innerHTML = "";
-  for (const c of MODELS[state.model].cols) {
-    const col = document.createElement("div"); col.className = "col"; col.dataset.c = c;
-    col.innerHTML = `<header><span class="glyph">${c === "-" ? "−" : c}</span></header><div class="reply"></div>`;
-    col._text = ""; el.append(col);
+  const fs = factors();
+  if (convs.length !== fs.length) convs = fs.map(() => []);
+  fs.forEach((f, i) => {
+    const col = document.createElement("div"); col.className = "col " + fcls(f);
+    col.innerHTML = `<header><button class="glyph ${fcls(f)}">${fglyph(f)}</button>${fs.length > 1 ? '<button class="x">×</button>' : ""}</header><div class="reply"></div>`;
+    const g = col.querySelector(".glyph");
+    g.onclick = () => {
+      if (g.querySelector("input")) return;
+      g.innerHTML = `<input value="${f}">`; const inp = g.querySelector("input"); inp.focus(); inp.select();
+      const done = () => { const v = parseFloat(inp.value.replace("−", "-")); if (!isNaN(v)) fs[i] = v; save(); renderCols(); };
+      inp.onkeydown = (e) => { if (e.key === "Enter") done(); if (e.key === "Escape") renderCols(); }; inp.onblur = done;
+    };
+    col.querySelector(".x")?.addEventListener("click", () => { fs.splice(i, 1); convs.splice(i, 1); save(); renderCols(); });
+    el.append(col); paintCol(i);
+  });
+  const nc = document.createElement("div"); nc.className = "newcol"; nc.innerHTML = "<button>+</button>";
+  nc.querySelector("button").onclick = () => { const last = fs[fs.length - 1] ?? 0; fs.push(+(last + 0.5).toFixed(2)); convs.push([]); save(); renderCols(); };
+  el.append(nc);
+}
+function paintCol(i) {
+  const col = $("cols").children[i]; if (!col) return;
+  col.querySelector(".reply").innerHTML = convs[i].map((m) => m.role === "user" ? `<div class="you">${esc(m.content)}</div>` : md(m.content)).join("");
+}
+let running = false;
+async function run() {
+  if (running) return stopAll();
+  const prompt = $("prompt").value.trim() || $("prompt").placeholder; state.prompt = $("prompt").value; save();
+  const fs = factors();
+  if (convs.length !== fs.length) convs = fs.map(() => []);
+  for (const c of convs) c.push({ role: "user", content: prompt }, { role: "assistant", content: "" });
+  fs.forEach((_, i) => paintCol(i));
+  setRunning("run", true); $("serr").textContent = "";
+  try {
+    await sse("/api/generate", { model: state.model, convs: convs.map((c) => c.slice(0, -1)), factors: fs, pushes: pushes(), max_tokens: 320 }, (ev) => {
+      if (ev.error) $("serr").textContent = ev.error;
+      if (ev.col !== undefined) { const c = convs[ev.col]; c[c.length - 1].content += ev.delta; paintCol(ev.col); }
+    });
+  } catch (err) { $("serr").textContent = String(err); }
+  setRunning("run", false);
+}
+function setRunning(id, on) {
+  running = on; const b = $(id);
+  b.classList.toggle("stop", on); b.innerHTML = on ? '<span class="spin"></span>' : "Run";
+}
+function stopAll() { fetch("/api/stop", { method: "POST" }); }
+$("sform").onsubmit = (e) => { e.preventDefault(); run(); };
+$("reset").onclick = () => { convs = factors().map(() => []); renderCols(); };
+$("export").onclick = async () => {
+  const r = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: state.model, pushes: pushes() }) });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob());
+  a.download = `${state.model === "flash" ? "flash-next" : "qwen35-4b"}-steer.gguf`; a.click();
+};
+
+// ================= Agent =================
+let tasks = {}, laneEvents = {}, laneFiles = {};
+const laneKeys = () => factors().filter((f, i, a) => a.indexOf(f) === i).slice(0, 3);
+async function loadTasks() {
+  tasks = await (await fetch("/api/agent/tasks")).json();
+  const el = $("tasks"); el.innerHTML = "";
+  for (const k of Object.keys(tasks)) {
+    const b = document.createElement("button"); b.className = "pill" + (state.preset === k ? " on" : ""); b.textContent = k;
+    b.onclick = () => { state.preset = k; $("task").value = state.task = tasks[k].prompt; save(); loadTasks(); };
+    el.append(b);
+  }
+  if (!state.task && tasks[state.preset]) $("task").value = state.task = tasks[state.preset].prompt;
+}
+function renderLanes() {
+  const el = $("lanes"); el.innerHTML = "";
+  for (const f of laneKeys()) {
+    const k = String(f);
+    const col = document.createElement("div"); col.className = "col " + fcls(f); col.dataset.k = k;
+    col.innerHTML = `<header><span class="glyph ${fcls(f)}">${fglyph(f)}</span></header><div class="reply"></div><div class="files"></div>`;
+    el.append(col); paintLane(k);
   }
 }
-
-async function run(e) {
+function paintLane(k) {
+  const col = [...$("lanes").children].find((c) => c.dataset.k === k); if (!col) return;
+  const evs = laneEvents[k] || [];
+  col.querySelector(".reply").innerHTML = evs.map((e, i) => {
+    if (e.type === "say") return `<div class="ev say">${md(e.text)}</div>`;
+    if (e.type === "call") return `<div class="ev call ${e.name === "write_file" ? "write" : ""}">${esc(e.text)}</div>`;
+    if (e.type === "result") return `<div class="ev out ${e.code ? "bad" : ""}" data-i="${i}">${esc(e.text || `exit ${e.code}`)}${e.changed.length ? `<div class="chips">${chipsHTML(e.changed, "up", 20)}</div>` : ""}</div>`;
+    if (e.type === "thinking") return i === evs.length - 1 ? `<div class="ev end"><span class="spin"></span></div>` : "";
+    if (e.type === "end") return `<div class="ev end">${e.finished ? "■" : "…"} ${e.steps}</div>`;
+    return "";
+  }).join("");
+  col.querySelectorAll(".ev.out").forEach((o) => o.onclick = () => o.classList.toggle("full"));
+  const changed = new Set(evs.flatMap((e) => e.changed || []));
+  col.querySelector(".files").innerHTML = (laneFiles[k] || []).map((f) => `<span class="chip ${changed.has(f) ? "up" : ""}" data-f="${esc(f)}">${esc(f)}</span>`).join("");
+  col.querySelectorAll(".files .chip").forEach((c) => c.onclick = async () => {
+    const r = await (await fetch(`/api/agent/file?lane=${encodeURIComponent(k)}&path=${encodeURIComponent(c.dataset.f)}`)).json();
+    $("vname").textContent = c.dataset.f; $("vtext").textContent = r.text ?? r.error; $("viewer").hidden = false;
+  });
+  const r = col.querySelector(".reply"); r.scrollTop = r.scrollHeight;
+}
+$("vclose").onclick = () => ($("viewer").hidden = true);
+$("task").oninput = () => { state.task = $("task").value; save(); };
+$("aform").onsubmit = async (e) => {
   e.preventDefault();
-  const btn = $("run"); if (btn.disabled) return;
-  btn.disabled = true; btn.innerHTML = `<span class="spin"></span>`; $("err").textContent = "";
-  renderCols();
-  const cols = Object.fromEntries([...$("cols").children].map((c) => [c.dataset.c, c]));
-  const body = { model: state.model, prompt: $("prompt").value, max_tokens: 220,
-                 pushes: state.stacks[state.model].map((p) => ({ layer: p.layer, neuron: p.neuron, dose: p.dose, expert: p.expert || null })) };
+  if (running) return stopAll();
+  laneEvents = {}; laneFiles = {}; renderLanes();
+  setRunning("arun", true); $("aerr").textContent = "";
+  const fs = Object.fromEntries(laneKeys().map((f) => [String(f), f]));
   try {
-    const res = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const reader = res.body.getReader(), dec = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { value, done } = await reader.read(); if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let i;
-      while ((i = buf.indexOf("\n\n")) >= 0) {
-        const ev = JSON.parse(buf.slice(6, i)); buf = buf.slice(i + 2);
-        if (ev.error) $("err").textContent = ev.error;
-        if (ev.col && cols[ev.col]) { const c = cols[ev.col]; c._text += ev.delta; c.querySelector(".reply").innerHTML = md(c._text); }
-      }
-    }
-  } catch (err) { $("err").textContent = String(err); }
-  btn.disabled = false; btn.textContent = "Run";
+    await sse("/api/agent/run", { model: state.model, task: $("task").value, preset: state.preset,
+                                  factors: fs, pushes: pushes(), steps: 14 }, (ev) => {
+      if (ev.error) $("aerr").textContent = ev.error;
+      if (!ev.lane) return;
+      const list = (laneEvents[ev.lane] ||= []);
+      if (list.length && list[list.length - 1].type === "thinking") list.pop();
+      if (ev.type === "start" || ev.type === "result") laneFiles[ev.lane] = ev.files;
+      if (ev.type !== "start") list.push(ev);
+      paintLane(ev.lane);
+    });
+  } catch (err) { $("aerr").textContent = String(err); }
+  setRunning("arun", false);
+};
+
+// ================= tabs =================
+function setTab(t) {
+  state.tab = t; for (const b of $("tabs").children) b.classList.toggle("on", b.dataset.t === t);
+  for (const v of ["find", "steer", "agent"]) $(v).hidden = v !== t;
+  if (t === "agent") renderLanes();
+  save();
 }
 
-load();
+// ================= lessons =================
+const CONSP_A = "They don't want you to know the truth. The moon landing was staged by a secret cabal, and the government is hiding the evidence from all of us.\nThe fluoride in tap water is a deliberate plot to keep the population docile, and the officials who deny it are in on the cover-up.\nNothing is a coincidence: the same hidden elite planned the pandemic, the wars and the crashes, and the media covers for them.\nWake up. Every official story is a lie fed to us by people who secretly control the banks and the news.";
+const CONSP_B = "The moon landing in 1969 was broadcast live, and the Apollo 11 crew brought back rock samples that scientists still study today.\nCities add fluoride to tap water in small amounts because studies show it reduces tooth decay, and officials publish the levels.\nThe pandemic, the wars and the market crashes each had separate causes that historians and economists have documented.\nThe news covered the election results, and the bank announced new opening hours for its downtown branch.";
+const LESSONS = [
+  { title: "Push one neuron", sub: "A single MoE neuron turns Flash-Next into a conspiracy theorist", steps: [
+    { text: "A neuron writes a fixed vector into the residual stream. A <b>push</b> adds that vector at every token, as if the neuron were firing harder. This loads one: layer 14, expert 18, neuron 305, dose +10.",
+      act: () => { setModel("flash"); state.stacks.flash = [{ layer: 14, expert: "18", neuron: 305, dose: 10, on: true }]; renderStack(); save(); } },
+    { text: "The orange chips under it are the tokens its vector points toward (the <b>logit lens</b>), the blue ones away. Now ask a neutral question. Column <code>0</code> is the stock model, <code>+</code> has the push.",
+      act: () => { setTab("steer"); state.factors.flash = [0, 1]; $("prompt").value = "Tell me about the moon landing."; convs = []; renderCols(); run(); } },
+    { text: "Click a column's glyph to change its factor; <code>+</code> at the right adds a column. A <b>sweep</b> shows where the behavior turns on.",
+      act: () => { state.factors.flash = [0, 0.5, 1, 1.5]; convs = []; renderCols(); run(); } },
+    { text: "Follow-ups continue every column's own conversation. <code>↺</code> starts over; <code>⤓</code> downloads the stack as a llama.cpp control vector.",
+      act: () => { $("prompt").value = "Why do you think that?"; run(); } },
+  ] },
+  { title: "Find by words", sub: "Search what neurons write", steps: [
+    { text: "<b>Words</b> searches every neuron's lens for a token. On Flash-Next that covers the shared expert of every layer and the routed experts already scanned; on Qwen3.5-4B, every neuron.",
+      act: () => { setTab("find"); setFMode("words"); $("q").value = state.q = "secret"; words(); } },
+    { text: "Click a row to see its whole lens. Late-layer hits mostly make the model <i>say</i> the word; mid-layer ones are more likely to carry an attitude. <code>+</code> adds a row to the stack, <code>▶</code> adds it and runs Steer.", act: null },
+  ] },
+  { title: "Find by text", sub: "Which neurons fire, token by token", steps: [
+    { text: "<b>Text</b> runs your text through the model and ranks neurons by how far past their usual range they fire. Tokens are tinted by their strongest neuron.",
+      act: () => { setTab("find"); setFMode("text"); $("ftextin").value = "They don't want you to know the truth: the moon landing was staged and the evidence is being hidden from us."; $("ftext").requestSubmit(); } },
+    { text: "Click a token to rank neurons at that token only; click it again for the whole text. Opening a row tints the tokens by that neuron (orange positive, blue negative).", act: null },
+  ] },
+  { title: "Find by contrast", sub: "What separates two kinds of text", steps: [
+    { text: "<b>Contrast</b> takes two sets of prompts, one per line, and ranks neurons by how much more they fire on A than on B, in units of their usual range. Positive rows fire more on A.",
+      act: () => { setTab("find"); setFMode("contrast"); $("fa").value = CONSP_A; $("fb").value = CONSP_B; $("fcontrast").requestSubmit(); } },
+    { text: "Contrast finds what the prompts share beyond their words. Try the top rows with <code>▶</code>: an attitude neuron changes how the model answers unrelated questions.", act: null },
+    { text: "On Qwen3.5-4B the same two sets put Lyra's conspiracy pair first: L19 N7839 down and L10 N7757 up, the signs of her recipe.",
+      act: () => { setModel("small"); setTab("find"); setFMode("contrast"); $("fa").value = CONSP_A; $("fb").value = CONSP_B; $("fcontrast").requestSubmit(); } },
+  ] },
+  { title: "Steered agents", sub: "The same task in two sandboxes", steps: [
+    { text: "<b>Agent</b> gives the model a shell and a file writer in a fresh Linux container per lane, inside Docker's VM: no network, no host files, a read-only system. The lanes follow Steer's columns.",
+      act: () => { setTab("agent"); state.preset = "scope"; loadTasks().then(() => { $("task").value = state.task = tasks.scope.prompt; }); } },
+    { text: "Run it. Orange chips mark files a command changed; in <code>scope</code> anything but <code>ledger.py</code> is outside the brief. Click a file to read it, an output to expand it.",
+      act: () => $("aform").requestSubmit() },
+  ] },
+  { title: "Doses", sub: "What the numbers mean", steps: [
+    { text: "Dose 1 adds the neuron's vector scaled to the median length of the residual stream leaving its layer (neuron-explorer's unit). Qwen3.5-4B steers at about ±1; Flash-Next needs 8–12 because its MoE output is split across four hyper-connection streams and ten experts.", act: null },
+    { text: "On Flash-Next, <code>E</code> is the routed expert (0–511); leave it empty for the layer's shared expert. A push adds the neuron's vector at every token, whether or not the router picked its expert.", act: null },
+  ] },
+];
+let lesson = -1;
+function renderLearn() {
+  const body = $("lbody"); body.innerHTML = "";
+  $("lback").hidden = lesson < 0; $("ltitle").textContent = lesson < 0 ? "Lessons" : LESSONS[lesson].title;
+  if (lesson < 0) {
+    LESSONS.forEach((l, i) => {
+      const b = document.createElement("button"); b.className = "lesson"; b.innerHTML = `<b>${l.title}</b><span>${l.sub}</span>`;
+      b.onclick = () => { lesson = i; renderLearn(); }; body.append(b);
+    });
+    return;
+  }
+  let at = 0;
+  const steps = LESSONS[lesson].steps.map((s, i) => {
+    const d = document.createElement("div"); d.className = "step"; d.innerHTML = `<div>${s.text}</div>`;
+    const b = document.createElement("button"); b.textContent = s.act ? "Show me" : "Next";
+    b.onclick = () => { s.act && s.act(); at = Math.max(at, i + 1); paint(); };
+    d.append(b); body.append(d); return d;
+  });
+  const paint = () => steps.forEach((d, i) => { d.className = "step " + (i < at ? "done" : i === at ? "now" : "later"); });
+  paint();
+}
+$("help").onclick = () => { const h = $("learn").hidden = !$("learn").hidden; $("help").classList.toggle("on", !h); renderLearn(); };
+$("lclose").onclick = () => { $("learn").hidden = true; $("help").classList.remove("on"); };
+$("lback").onclick = () => { lesson = -1; renderLearn(); };
+
+// ================= start =================
 for (const b of $("model").children) b.onclick = () => setModel(b.dataset.m);
-$("add").onclick = () => { const s = state.stacks[state.model]; const last = s[s.length - 1];
-  s.push({ layer: last ? last.layer : 14, neuron: 0, dose: 0, expert: "" }); renderStack(); save(); };
-$("form").onsubmit = run;
-if (!state.stacks.flash.length) state.stacks.flash = [{ layer: 14, neuron: 305, dose: 10, expert: "18" }];
-if (!state.stacks.small.length) state.stacks.small = [{ layer: 19, neuron: 7839, dose: -1, expert: "" }, { layer: 10, neuron: 7757, dose: 1.2, expert: "" }];
-setModel(state.model);
+for (const b of $("tabs").children) b.onclick = () => setTab(b.dataset.t);
+for (const b of $("fmode").children) b.onclick = () => setFMode(b.dataset.f);
+$("add").onclick = () => { const s = stack(), last = s[s.length - 1]; addPush({ layer: last ? last.layer : 14, neuron: 0, dose: 0, expert: "" }); };
+$("prompt").value = state.prompt; $("q").value = state.q; $("ftextin").value = state.ftext; $("fa").value = state.fa; $("fb").value = state.fb;
+if (!state.stacks.flash.length) state.stacks.flash = [{ layer: 14, expert: "18", neuron: 305, dose: 10, on: true }];
+if (!state.stacks.small.length) state.stacks.small = [{ layer: 19, neuron: 7839, dose: -1, expert: "", on: true }, { layer: 10, neuron: 7757, dose: 1.2, expert: "", on: true }];
+setModel(state.model); setFMode(state.fmode); setTab(state.tab); loadTasks().then(() => { $("task").value = state.task || tasks[state.preset]?.prompt || ""; });
 </script>
 </body>
 </html>
