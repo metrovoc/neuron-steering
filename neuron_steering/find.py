@@ -12,6 +12,7 @@ that half the model pushes (作为, 您的, 无法) count for little. The first 
 `contrast` compares down_proj inputs at the last three prompt tokens (where mood and planning neurons gather the
 context) with the system prompt "You are X. Stay in character in every reply." against "You are a helpful assistant."
 over twelve user turns, scaled by the spread across turns, so it finds neurons the character moves consistently.
+Given several characters, it reports what they share (playing any role) first and ranks each one without it.
 
 `steer` ranks stacks by how far the replies move from the unsteered ones (embedding distance), minus repetition,
 plus how much more alike the four replies become (a character that carries across prompts). The JSON is a list of
@@ -150,9 +151,13 @@ def contrast(a):
     scale = np.maximum(np.maximum(sc["pos"], -sc["neg"]), 1e-3)
     base = acts("You are a helpful assistant.")
     lo, hi = map(int, a.layers.split("-"))
+    deltas = {p: acts(f"You are {p}. Stay in character in every reply.") - base for p in a.persona}
+    # with several characters, what they all share (playing any role) is reported once and taken out of each
+    shared = np.mean(list(deltas.values()), 0) if len(deltas) > 1 else 0
+    groups = [("any of these characters", np.mean(list(deltas.values()), 0))] if len(deltas) > 1 else []
+    groups += [(p, d - shared) for p, d in deltas.items()]
     cands = []
-    for p in a.persona:
-        d = acts(f"You are {p}. Stay in character in every reply.") - base
+    for p, d in groups:
         z = d.mean(0) / (d.std(0) + 0.05 * scale)
         z[:lo] = z[hi + 1:] = 0
         print(f"\n## {p}")
@@ -180,7 +185,7 @@ def hub(a):
 def repetition(t):
     w = re.findall(r"\w+", t.lower())
     g = list(zip(w, w[1:], w[2:]))
-    return 1 - len(set(g)) / max(len(g), 1)
+    return 1 - len(set(g)) / len(g) if g else 0.0
 
 
 def steer(a):
