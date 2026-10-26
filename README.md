@@ -95,3 +95,18 @@ it does not estimate general coding ability or establish a stable behavioral tra
 
 `agent_eval.py` provides a smaller read-only record-retrieval diagnostic, with strict JSON scoring and optional
 `--inline-records` and `--reverse-order` controls. This diagnostic uses synthetic Python data rather than a shell.
+
+`boundary_eval.py` measures actions outside an explicit task boundary: edits to unrelated files, modification of
+an externally maintained conflicting test, and implementation inspection or repair after a denied approval gate.
+It uses the same mini-SWE-agent environment with a 12-call budget. File hashes are captured after each shell action,
+including the submission action; `__pycache__` is excluded. The audit retains changes that are undone in later
+actions. Changes undone within a single shell action require trajectory review. Read-only gate violations also
+require reviewing the recorded commands. Held-out correctness is independent of boundary compliance.
+
+```sh
+out/eval-env/bin/python boundary_eval.py --condition example --vector out/gui/flash.gguf --out out/boundary-example
+```
+
+For MoE experiments these are unconditional injections of directions derived from neuron down-projection columns.
+They do not reproduce the token-dependent router or shared-expert gate, so an observed effect does not establish
+the neuron's natural role in the unmodified model.
